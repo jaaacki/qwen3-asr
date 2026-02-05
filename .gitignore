@@ -1,0 +1,10 @@
+models/
+workspace/
+build.log
+*.wav
+*.mp3
+*.flac
+test.txt
+__pycache__/
+*.pyc
+.claude/

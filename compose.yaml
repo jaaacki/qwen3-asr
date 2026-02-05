@@ -1,0 +1,17 @@
+services:
+  qwen3-asr:
+    build: .
+    image: qwen3-asr-local:cuda124
+    container_name: qwen3_asr
+    restart: unless-stopped
+    ports:
+      - "8100:8000"
+    volumes:
+      - ./models:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
