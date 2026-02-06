@@ -97,6 +97,16 @@ curl -X POST http://localhost:8100/v1/audio/transcriptions/stream \
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `MODEL_ID` | `Qwen/Qwen3-ASR-0.6B` | HuggingFace model ID |
+| `IDLE_TIMEOUT` | `120` | Seconds of inactivity before unloading model from GPU (0 = disabled) |
+| `REQUEST_TIMEOUT` | `300` | Maximum seconds per inference request |
+
+### GPU Memory Management
+
+The model loads **on-demand** with the first request and automatically **unloads after idle timeout** to free VRAM for other services. This is ideal for shared GPU environments.
+
+- Cold start (first request): ~19s to load model
+- Warm requests: ~1.3s for 20s audio
+- Idle VRAM usage: 0 MB (model unloaded)
 
 ## Port Mapping
 

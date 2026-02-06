@@ -2,11 +2,17 @@ FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 WORKDIR /app
 
+# CUDA memory allocator tuning — reduce fragmentation for shared GPU
+ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+# Disable tokenizer parallelism warnings in forked workers
+ENV TOKENIZERS_PARALLELISM=false
+
 # Install system dependencies
-RUN apt-get update && apt-get install -y git libsndfile1 ffmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git libsndfile1 ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
-# Remove explicit transformers install to allow qwen-asr to resolve its dependency
 RUN pip install --no-cache-dir \
     accelerate \
     soundfile \

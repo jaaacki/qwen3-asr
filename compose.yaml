@@ -8,6 +8,9 @@ services:
       - "8100:8000"
     volumes:
       - ./models:/root/.cache/huggingface
+    environment:
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - REQUEST_TIMEOUT=300
     deploy:
       resources:
         reservations:
@@ -15,3 +18,9 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
