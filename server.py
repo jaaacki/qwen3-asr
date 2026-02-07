@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 import torch
 import soundfile as sf
@@ -35,6 +35,9 @@ _last_used = 0.0
 
 # Target sample rate expected by the model
 TARGET_SR = 16000
+
+# WebSocket buffer size (in bytes) - ~1.5 seconds of 16kHz 16-bit mono audio
+WS_BUFFER_SIZE = int(os.getenv("WS_BUFFER_SIZE", str(int(TARGET_SR * 2 * 1.5))))
 
 
 def release_gpu_memory():
@@ -321,6 +324,153 @@ async def transcribe_stream(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@app.websocket("/ws/transcribe")
+async def websocket_transcribe(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time audio transcription.
+    
+    Accepts binary audio frames (PCM 16-bit, 16kHz mono).
+    Buffers incoming chunks and transcribes when buffer reaches ~1-2 seconds.
+    Returns JSON: {"text": "...", "is_partial": bool, "is_final": bool}
+    
+    Client can send:
+    - Binary audio data (raw PCM bytes)
+    - JSON control messages: {"action": "flush"} to force transcription of buffered audio
+    - JSON control messages: {"action": "reset"} to clear buffer
+    """
+    await websocket.accept()
+    
+    # Audio buffer for accumulating chunks
+    audio_buffer = bytearray()
+    
+    try:
+        await _ensure_model_loaded()
+        
+        # Send connection confirmation
+        await websocket.send_json({
+            "status": "connected",
+            "sample_rate": TARGET_SR,
+            "format": "pcm_s16le",
+            "buffer_size": WS_BUFFER_SIZE
+        })
+        
+        while True:
+            try:
+                # Receive data from client
+                data = await websocket.receive()
+                
+                # Handle text messages (control commands)
+                if "text" in data:
+                    try:
+                        msg = json.loads(data["text"])
+                        action = msg.get("action", "")
+                        
+                        if action == "flush" and len(audio_buffer) > 0:
+                            # Force transcription of current buffer
+                            text = await _transcribe_buffer(audio_buffer)
+                            await websocket.send_json({
+                                "text": text,
+                                "is_partial": False,
+                                "is_final": True
+                            })
+                            audio_buffer.clear()
+                            
+                        elif action == "reset":
+                            # Clear buffer
+                            audio_buffer.clear()
+                            await websocket.send_json({
+                                "status": "buffer_reset"
+                            })
+                            
+                    except json.JSONDecodeError:
+                        await websocket.send_json({
+                            "error": "Invalid JSON command"
+                        })
+                
+                # Handle binary audio data
+                elif "bytes" in data:
+                    audio_chunk = data["bytes"]
+                    audio_buffer.extend(audio_chunk)
+                    
+                    # Process when buffer reaches target size
+                    if len(audio_buffer) >= WS_BUFFER_SIZE:
+                        # Extract processable chunk (ensure even number for 16-bit samples)
+                        chunk_size = (WS_BUFFER_SIZE // 2) * 2
+                        process_chunk = bytes(audio_buffer[:chunk_size])
+                        audio_buffer = audio_buffer[chunk_size:]
+                        
+                        # Transcribe chunk
+                        text = await _transcribe_buffer(process_chunk)
+                        
+                        # Send result
+                        is_final = len(audio_buffer) == 0
+                        await websocket.send_json({
+                            "text": text,
+                            "is_partial": not is_final,
+                            "is_final": is_final
+                        })
+                        
+            except WebSocketDisconnect:
+                print("WebSocket client disconnected")
+                break
+                
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({
+                "error": str(e)
+            })
+        except:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+async def _transcribe_buffer(audio_bytes: bytes) -> str:
+    """
+    Transcribe a buffer of PCM 16-bit audio.
+    
+    Args:
+        audio_bytes: Raw PCM 16-bit little-endian bytes
+        
+    Returns:
+        Transcribed text
+    """
+    try:
+        # Convert bytes to numpy array (int16 PCM)
+        audio = np.frombuffer(audio_bytes, dtype=np.int16)
+        
+        # Convert to float32 [-1, 1]
+        audio = audio.astype(np.float32) / 32768.0
+        
+        # Preprocess (mono conversion, normalization, etc.)
+        audio, sr = preprocess_audio(audio, TARGET_SR)
+        
+        # Run inference with semaphore
+        async with _infer_semaphore:
+            results = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: _do_transcribe(audio, sr, None, False)
+                ),
+                timeout=REQUEST_TIMEOUT
+            )
+        
+        if results and len(results) > 0:
+            return results[0].text
+        return ""
+        
+    except asyncio.TimeoutError:
+        release_gpu_memory()
+        return "[timeout]"
+    except Exception as e:
+        print(f"Transcription error: {e}")
+        return f"[error: {e}]"
 
 
 if __name__ == "__main__":

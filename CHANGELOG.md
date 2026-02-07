@@ -3,6 +3,12 @@
 ## v0.2.0 — 2026-02-06
 
 ### Added
+- **WebSocket endpoint `/ws/transcribe`** — real-time audio transcription via WebSocket
+  - Accepts binary audio frames (PCM 16-bit, 16kHz mono)
+  - Automatic buffering and chunking (~1.5 seconds by default, configurable via `WS_BUFFER_SIZE`)
+  - Returns JSON responses: `{"text": "...", "is_partial": bool, "is_final": bool}`
+  - Control commands: `{"action": "flush"}` and `{"action": "reset"}`
+  - Proper connection lifecycle handling (connect, disconnect, errors)
 - **On-demand model loading** — model loads on first request instead of at startup (0 VRAM when idle)
 - **Idle auto-unload** — model automatically unloads after `IDLE_TIMEOUT` seconds of inactivity (default: 120s), freeing GPU VRAM for other services
 - **GPU inference semaphore** — serializes concurrent requests to prevent OOM on shared GPU
