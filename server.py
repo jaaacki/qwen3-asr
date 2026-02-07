@@ -356,6 +356,8 @@ async def websocket_transcribe(websocket: WebSocket):
     audio_buffer = bytearray()
     # Overlap: tail of previous chunk, prepended to next for acoustic context
     overlap_buffer = bytearray()
+    # Language: None = auto-detect, or a code like "en", "zh"
+    lang_code: str | None = None
 
     try:
         await _ensure_model_loaded()
@@ -381,7 +383,8 @@ async def websocket_transcribe(websocket: WebSocket):
 
                         if action == "flush" and len(audio_buffer) > 0:
                             text = await _transcribe_with_context(
-                                audio_buffer, overlap_buffer, pad_silence=True
+                                audio_buffer, overlap_buffer, pad_silence=True,
+                                lang_code=lang_code,
                             )
                             await websocket.send_json({
                                 "text": text,
@@ -406,6 +409,17 @@ async def websocket_transcribe(websocket: WebSocket):
                                 "status": "buffer_reset"
                             })
 
+                        elif action == "config":
+                            new_lang = msg.get("language")
+                            if new_lang == "auto":
+                                lang_code = None
+                            elif new_lang:
+                                lang_code = new_lang
+                            await websocket.send_json({
+                                "status": "configured",
+                                "language": lang_code or "auto",
+                            })
+
                     except json.JSONDecodeError:
                         await websocket.send_json({
                             "error": "Invalid JSON command"
@@ -424,7 +438,8 @@ async def websocket_transcribe(websocket: WebSocket):
 
                         # Transcribe with overlap from previous chunk
                         text = await _transcribe_with_context(
-                            process_chunk, overlap_buffer, pad_silence=False
+                            process_chunk, overlap_buffer, pad_silence=False,
+                            lang_code=lang_code,
                         )
 
                         # Save tail of this chunk as overlap for next
@@ -443,7 +458,8 @@ async def websocket_transcribe(websocket: WebSocket):
                 if len(audio_buffer) > 0:
                     try:
                         text = await _transcribe_with_context(
-                            audio_buffer, overlap_buffer, pad_silence=True
+                            audio_buffer, overlap_buffer, pad_silence=True,
+                            lang_code=lang_code,
                         )
                         if text:
                             print(f"[WS] Final transcription on disconnect: {text}")
@@ -469,6 +485,7 @@ async def _transcribe_with_context(
     audio_bytes: bytes | bytearray,
     overlap: bytes | bytearray,
     pad_silence: bool = False,
+    lang_code: str | None = None,
 ) -> str:
     """
     Transcribe audio with optional overlap prefix and silence padding.
@@ -477,6 +494,7 @@ async def _transcribe_with_context(
         audio_bytes: Current chunk of PCM 16-bit audio
         overlap: Tail of the previous chunk (prepended for context)
         pad_silence: If True, append silence to help the model commit trailing words
+        lang_code: Language code (e.g. "en", "zh") or None for auto-detect
     """
     try:
         # Build the full audio: [overlap] + [current chunk] + [optional silence]
@@ -504,7 +522,7 @@ async def _transcribe_with_context(
             results = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: _do_transcribe(audio, sr, None, False)
+                    lambda: _do_transcribe(audio, sr, lang_code, False)
                 ),
                 timeout=REQUEST_TIMEOUT,
             )
