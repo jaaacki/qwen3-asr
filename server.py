@@ -36,8 +36,18 @@ _last_used = 0.0
 # Target sample rate expected by the model
 TARGET_SR = 16000
 
-# WebSocket buffer size (in bytes) - ~1.5 seconds of 16kHz 16-bit mono audio
-WS_BUFFER_SIZE = int(os.getenv("WS_BUFFER_SIZE", str(int(TARGET_SR * 2 * 1.5))))
+# ── WebSocket streaming config ──────────────────────────────────────────────
+# Buffer size: how much audio to accumulate before transcribing (~800ms default)
+# At 16kHz 16-bit mono: 800ms = 25600 bytes
+WS_BUFFER_SIZE = int(os.getenv("WS_BUFFER_SIZE", str(int(TARGET_SR * 2 * 0.8))))
+
+# Overlap: how much of the previous chunk to prepend to the next (~300ms default)
+# Prevents words from being split at chunk boundaries
+WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.3))))
+
+# Silence padding appended before final transcription on flush (~600ms)
+# Gives the model trailing context to commit the last word
+WS_FLUSH_SILENCE_MS = int(os.getenv("WS_FLUSH_SILENCE_MS", "600"))
 
 
 def release_gpu_memory():
@@ -330,141 +340,179 @@ async def transcribe_stream(
 async def websocket_transcribe(websocket: WebSocket):
     """
     WebSocket endpoint for real-time audio transcription.
-    
+
     Accepts binary audio frames (PCM 16-bit, 16kHz mono).
-    Buffers incoming chunks and transcribes when buffer reaches ~1-2 seconds.
-    Returns JSON: {"text": "...", "is_partial": bool, "is_final": bool}
-    
+    Buffers audio and transcribes in ~800ms windows with 300ms overlap
+    between consecutive chunks to prevent word splits at boundaries.
+
     Client can send:
     - Binary audio data (raw PCM bytes)
-    - JSON control messages: {"action": "flush"} to force transcription of buffered audio
-    - JSON control messages: {"action": "reset"} to clear buffer
+    - JSON: {"action": "flush"} — transcribe remaining buffer with silence padding
+    - JSON: {"action": "reset"} — clear buffer and overlap state
     """
     await websocket.accept()
-    
-    # Audio buffer for accumulating chunks
+
+    # Audio buffer for accumulating incoming chunks
     audio_buffer = bytearray()
-    
+    # Overlap: tail of previous chunk, prepended to next for acoustic context
+    overlap_buffer = bytearray()
+
     try:
         await _ensure_model_loaded()
-        
-        # Send connection confirmation
+
+        # Send connection confirmation with config
         await websocket.send_json({
             "status": "connected",
             "sample_rate": TARGET_SR,
             "format": "pcm_s16le",
-            "buffer_size": WS_BUFFER_SIZE
+            "buffer_size": WS_BUFFER_SIZE,
+            "overlap_size": WS_OVERLAP_SIZE,
         })
-        
+
         while True:
             try:
-                # Receive data from client
                 data = await websocket.receive()
-                
-                # Handle text messages (control commands)
+
+                # ── Control commands (JSON text) ────────────────────────
                 if "text" in data:
                     try:
                         msg = json.loads(data["text"])
                         action = msg.get("action", "")
-                        
+
                         if action == "flush" and len(audio_buffer) > 0:
-                            # Force transcription of current buffer
-                            text = await _transcribe_buffer(audio_buffer)
+                            text = await _transcribe_with_context(
+                                audio_buffer, overlap_buffer, pad_silence=True
+                            )
                             await websocket.send_json({
                                 "text": text,
                                 "is_partial": False,
-                                "is_final": True
+                                "is_final": True,
                             })
                             audio_buffer.clear()
-                            
+                            overlap_buffer.clear()
+
+                        elif action == "flush" and len(audio_buffer) == 0:
+                            # Nothing to flush — send empty final
+                            await websocket.send_json({
+                                "text": "",
+                                "is_partial": False,
+                                "is_final": True,
+                            })
+
                         elif action == "reset":
-                            # Clear buffer
                             audio_buffer.clear()
+                            overlap_buffer.clear()
                             await websocket.send_json({
                                 "status": "buffer_reset"
                             })
-                            
+
                     except json.JSONDecodeError:
                         await websocket.send_json({
                             "error": "Invalid JSON command"
                         })
-                
-                # Handle binary audio data
+
+                # ── Binary audio data ───────────────────────────────────
                 elif "bytes" in data:
-                    audio_chunk = data["bytes"]
-                    audio_buffer.extend(audio_chunk)
-                    
+                    audio_buffer.extend(data["bytes"])
+
                     # Process when buffer reaches target size
                     if len(audio_buffer) >= WS_BUFFER_SIZE:
-                        # Extract processable chunk (ensure even number for 16-bit samples)
+                        # Take exactly WS_BUFFER_SIZE bytes (even-aligned for 16-bit)
                         chunk_size = (WS_BUFFER_SIZE // 2) * 2
                         process_chunk = bytes(audio_buffer[:chunk_size])
                         audio_buffer = audio_buffer[chunk_size:]
-                        
-                        # Transcribe chunk
-                        text = await _transcribe_buffer(process_chunk)
-                        
-                        # Send result
-                        is_final = len(audio_buffer) == 0
-                        await websocket.send_json({
-                            "text": text,
-                            "is_partial": not is_final,
-                            "is_final": is_final
-                        })
-                        
+
+                        # Transcribe with overlap from previous chunk
+                        text = await _transcribe_with_context(
+                            process_chunk, overlap_buffer, pad_silence=False
+                        )
+
+                        # Save tail of this chunk as overlap for next
+                        overlap_len = min(WS_OVERLAP_SIZE, len(process_chunk))
+                        overlap_buffer = bytearray(process_chunk[-overlap_len:])
+
+                        if text:
+                            await websocket.send_json({
+                                "text": text,
+                                "is_partial": True,
+                                "is_final": False,
+                            })
+
             except WebSocketDisconnect:
+                # Client disconnected — transcribe any remaining audio
+                if len(audio_buffer) > 0:
+                    try:
+                        text = await _transcribe_with_context(
+                            audio_buffer, overlap_buffer, pad_silence=True
+                        )
+                        if text:
+                            print(f"[WS] Final transcription on disconnect: {text}")
+                    except Exception:
+                        pass
                 print("WebSocket client disconnected")
                 break
-                
+
     except Exception as e:
         print(f"WebSocket error: {e}")
         try:
-            await websocket.send_json({
-                "error": str(e)
-            })
-        except:
+            await websocket.send_json({"error": str(e)})
+        except Exception:
             pass
     finally:
         try:
             await websocket.close()
-        except:
+        except Exception:
             pass
 
 
-async def _transcribe_buffer(audio_bytes: bytes) -> str:
+async def _transcribe_with_context(
+    audio_bytes: bytes | bytearray,
+    overlap: bytes | bytearray,
+    pad_silence: bool = False,
+) -> str:
     """
-    Transcribe a buffer of PCM 16-bit audio.
-    
+    Transcribe audio with optional overlap prefix and silence padding.
+
     Args:
-        audio_bytes: Raw PCM 16-bit little-endian bytes
-        
-    Returns:
-        Transcribed text
+        audio_bytes: Current chunk of PCM 16-bit audio
+        overlap: Tail of the previous chunk (prepended for context)
+        pad_silence: If True, append silence to help the model commit trailing words
     """
     try:
-        # Convert bytes to numpy array (int16 PCM)
-        audio = np.frombuffer(audio_bytes, dtype=np.int16)
-        
-        # Convert to float32 [-1, 1]
+        # Build the full audio: [overlap] + [current chunk] + [optional silence]
+        full_audio = bytearray()
+        if overlap:
+            full_audio.extend(overlap)
+        full_audio.extend(audio_bytes)
+
+        if pad_silence:
+            silence_bytes = int((WS_FLUSH_SILENCE_MS / 1000) * TARGET_SR * 2)
+            full_audio.extend(bytes(silence_bytes))
+
+        if len(full_audio) == 0:
+            return ""
+
+        # Convert to numpy float32
+        audio = np.frombuffer(bytes(full_audio), dtype=np.int16)
         audio = audio.astype(np.float32) / 32768.0
-        
-        # Preprocess (mono conversion, normalization, etc.)
+
+        # Preprocess (mono, normalize)
         audio, sr = preprocess_audio(audio, TARGET_SR)
-        
-        # Run inference with semaphore
+
+        # Run inference
         async with _infer_semaphore:
             results = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: _do_transcribe(audio, sr, None, False)
                 ),
-                timeout=REQUEST_TIMEOUT
+                timeout=REQUEST_TIMEOUT,
             )
-        
+
         if results and len(results) > 0:
             return results[0].text
         return ""
-        
+
     except asyncio.TimeoutError:
         release_gpu_memory()
         return "[timeout]"
