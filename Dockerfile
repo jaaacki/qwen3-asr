@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir \
     fastapi \
     uvicorn \
     python-multipart \
+    websockets \
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 
 COPY server.py /app/server.py

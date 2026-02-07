@@ -8,9 +8,11 @@ Wraps the Qwen3-ASR-0.6B model in a FastAPI server with an OpenAI-compatible tra
 
 - OpenAI-compatible `/v1/audio/transcriptions` endpoint
 - Server-Sent Events streaming via `/v1/audio/transcriptions/stream`
+- **Real-time WebSocket transcription** via `/ws/transcribe` with overlap and silence padding
 - Multi-language support with auto-detection
 - Optional timestamp output
 - GPU-accelerated inference (NVIDIA CUDA)
+- On-demand model loading with idle auto-unload
 - HuggingFace model caching via volume mount
 
 ## Quick Start
@@ -22,10 +24,12 @@ docker compose up -d
 # Check health
 curl http://localhost:8100/health
 
-# Transcribe audio
+# Transcribe audio file
 curl -X POST http://localhost:8100/v1/audio/transcriptions \
   -F "file=@audio.wav"
 ```
+
+For WebSocket real-time transcription, see [WEBSOCKET_USAGE.md](WEBSOCKET_USAGE.md).
 
 ## Requirements
 
@@ -92,13 +96,20 @@ curl -X POST http://localhost:8100/v1/audio/transcriptions/stream \
   -N
 ```
 
+### `WS /ws/transcribe`
+
+Real-time WebSocket transcription. See [WEBSOCKET_USAGE.md](WEBSOCKET_USAGE.md) for details.
+
 ## Configuration
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `MODEL_ID` | `Qwen/Qwen3-ASR-0.6B` | HuggingFace model ID |
-| `IDLE_TIMEOUT` | `120` | Seconds of inactivity before unloading model from GPU (0 = disabled) |
+| `IDLE_TIMEOUT` | `120` | Seconds before unloading model from GPU (0 = disabled) |
 | `REQUEST_TIMEOUT` | `300` | Maximum seconds per inference request |
+| `WS_BUFFER_SIZE` | `25600` | WebSocket buffer size in bytes (~800ms at 16kHz) |
+| `WS_OVERLAP_SIZE` | `9600` | Overlap bytes between chunks (~300ms at 16kHz) |
+| `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush/disconnect (ms) |
 
 ### GPU Memory Management
 
@@ -116,10 +127,12 @@ The container runs on port 8000 internally, mapped to **8100** on the host (conf
 
 ```
 qwen3-asr/
-├── compose.yaml      # Docker Compose configuration
-├── Dockerfile        # Container build definition
-├── server.py         # FastAPI server
-├── models/           # HuggingFace model cache (auto-populated)
+├── compose.yaml          # Docker Compose configuration
+├── Dockerfile            # Container build definition
+├── server.py             # FastAPI server
+├── models/               # HuggingFace model cache (auto-populated)
+├── CHANGELOG.md
+├── WEBSOCKET_USAGE.md    # WebSocket endpoint documentation
 └── README.md
 ```
 
