@@ -13,6 +13,16 @@ import numpy as np
 from qwen_asr import Qwen3ASRModel, parse_asr_output
 from qwen_asr.inference.qwen3_asr import AutoProcessor
 
+def _get_attn_implementation() -> str:
+    """Select best available attention implementation."""
+    try:
+        import flash_attn  # noqa: F401
+        return "flash_attention_2"
+    except ImportError:
+        return "sdpa"
+
+_ATTN_IMPL = _get_attn_implementation()
+
 app = FastAPI(title="Qwen3-ASR API")
 
 model = None
@@ -153,9 +163,10 @@ def _load_model_sync():
         device_map="cuda" if torch.cuda.is_available() else "cpu",
         trust_remote_code=True,
         low_cpu_mem_usage=True,
-        attn_implementation="sdpa",
+        attn_implementation=_ATTN_IMPL,
     )
     model.eval()
+    print(f"Attention implementation: {_ATTN_IMPL}")
 
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
