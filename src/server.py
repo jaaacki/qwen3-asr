@@ -96,9 +96,6 @@ class PriorityInferQueue:
 
 _infer_queue = PriorityInferQueue()
 
-# CUDA graph state (opt-in via USE_CUDA_GRAPHS=true)
-_cuda_graph_enabled = False
-
 # Lock to prevent concurrent load/unload
 _model_lock = asyncio.Lock()
 
@@ -403,27 +400,26 @@ def _load_model_sync():
 
 
 def _try_build_cuda_graph():
-    """Attempt to capture a CUDA graph for the decoder (best-effort)."""
-    global _cuda_graph_enabled
+    """
+    CUDA kernel cache warming (opt-in via USE_CUDA_GRAPHS=true).
+
+    Full CUDA graph capture requires fixed-size tensor inputs, but Qwen3-ASR
+    uses variable-length audio.  Instead, this runs extra warmup passes so
+    that CUDA JIT-compiles and caches the kernels used by the decoder,
+    reducing latency on the first real request.
+    """
     if not torch.cuda.is_available():
         return
     if os.getenv("USE_CUDA_GRAPHS", "").lower() != "true":
         return
     try:
-        # Warmup passes to make kernels eligible for capture
         dummy = np.random.randn(TARGET_SR).astype(np.float32) * 0.01
         for _ in range(3):
             model.transcribe((dummy, TARGET_SR))
         torch.cuda.synchronize()
-
-        # Note: full CUDA graph capture requires fixed-size tensor inputs.
-        # Qwen3-ASR uses variable-length audio so a full graph capture
-        # is only feasible for a specific fixed chunk size.
-        # This implementation does warmup passes to prime kernel caches.
-        _cuda_graph_enabled = True
-        print("CUDA graph capture: best-effort (variable-length audio limits scope)")
+        print("CUDA kernel cache warming complete (3 extra passes)")
     except Exception as e:
-        print(f"CUDA graph capture failed: {e}")
+        print(f"CUDA kernel cache warming failed: {e}")
 
 
 def _unload_model_sync():

@@ -202,3 +202,5 @@
 #   Expected: "CUDA graph capture: best-effort (variable-length audio limits scope)"
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 # Expected: correct transcription, faster kernel dispatch
+#   docker compose logs | grep "CUDA kernel"
+#   Expected: "CUDA kernel cache warming complete (3 extra passes)"
