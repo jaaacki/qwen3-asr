@@ -26,17 +26,17 @@ Issues ordered by dependency:
 _The system handles production workloads with sub-50ms inference, VAD-gated processing, and priority-based scheduling._
 
 Issues ordered by dependency:
-- [ ] #24 Add long audio chunking at silence boundaries
-- [ ] #25 Integrate Silero VAD for voice activity detection
-- [ ] #26 Reduce WebSocket buffer from 800ms to 400-500ms
-- [ ] #27 Fix WebSocket/HTTP semaphore contention with priority scheduling
-- [ ] #28 Implement real SSE streaming via chunked progressive transcription
-- [ ] #29 INT8 W8A8 quantization with SmoothQuant
-- [ ] #30 CUDA Graphs for decoder loop
-- [ ] #31 Export encoder to ONNX Runtime
-- [ ] #32 Implement KV-cache reuse across WebSocket chunks
-- [ ] #33 Dual-model strategy: 0.6B for partials, 1.7B for finals
-- [ ] #34 FP8 quantization for Hopper/Ada GPUs
+- [x] #24 Add long audio chunking at silence boundaries
+- [x] #25 Integrate Silero VAD for voice activity detection
+- [x] #26 Reduce WebSocket buffer from 800ms to 400-500ms
+- [x] #27 Fix WebSocket/HTTP semaphore contention with priority scheduling
+- [x] #28 Implement real SSE streaming via chunked progressive transcription
+- [x] #29 INT8 W8A8 quantization with SmoothQuant
+- [x] #30 CUDA Graphs for decoder loop
+- [x] #31 Export encoder to ONNX Runtime
+- [x] #32 Implement KV-cache reuse across WebSocket chunks
+- [x] #33 Dual-model strategy: 0.6B for partials, 1.7B for finals
+- [x] #34 FP8 quantization for Hopper/Ada GPUs
 
 ## Phase 3 — Architecture & Maximum Performance → v0.6.0
 _The system scales to concurrent streams with sub-25ms inference via hardware-optimized engines and architectural redesign._

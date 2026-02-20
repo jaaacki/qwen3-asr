@@ -71,3 +71,22 @@ Every builder created src/server_test.py from scratch in their first PR, causing
 
 ### Aha moment
 The pinned memory + CUDA stream combo in _do_transcribe() creates a complete async DMA pipeline: audio data is copied into page-locked memory, then the inference runs on a dedicated CUDA stream. This should enable transfer/compute overlap when profiled with nsys, though the benefit is harder to measure without a GPU profiling setup.
+
+---
+
+## 2026-02-20 — What just happened: Phase 2 complete (11 issues + 2 fixes merged)
+
+**Type**: What just happened
+**Related**: Phase 2, milestone/phase-2 -> main merge
+
+### Pattern
+Phase 2 issues were split into two builder groups: "basic" (issues #26, #28, #24, #25) and "advanced" (issues #27, #29, #30, #31, #32, #33, #34). The basic group touched the main transcription paths while the advanced group added new opt-in features. This separation worked well — the basic PRs had predictable conflicts in _do_transcribe and the WS handler, while advanced PRs mostly added new code paths gated by environment variables.
+
+### Key architecture change: PriorityInferQueue
+The biggest structural change was replacing `asyncio.Semaphore(1)` with a `PriorityInferQueue` backed by a min-heap. This required updating all inference call sites (HTTP transcribe, SSE streaming, WS transcription) to use `_infer_queue.submit(fn, priority=N)` instead of `async with _infer_semaphore:`. WS gets priority 0 (higher), HTTP/SSE get priority 1. The queue worker runs on the same `_infer_executor` ThreadPoolExecutor.
+
+### Lesson learned: _do_transcribe grew complex
+By the end of Phase 2, `_do_transcribe()` handles: pinned memory buffer, fast model selection (dual-model), ONNX encoder monkey-patching, CUDA stream routing, and fallback paths. Each Phase 2 PR added one concern, but the final function has 6 conditional branches. The `_run_transcribe()` inner function (from the ONNX fix) helped reduce duplication. Future refactoring could extract model dispatch to a separate strategy.
+
+### Lesson learned: fix PRs from critic
+The critic caught two real issues after merges: a duplicate `_infer_executor` definition (from the original Phase 1 code surviving alongside the priority queue's executor) and the ONNX session being loaded but never wired into inference. Both were fixed with small follow-up PRs merged into milestone/phase-2 before the milestone PR to main.

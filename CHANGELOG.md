@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.5.0 — 2026-02-20
+
+### Streaming & Audio Processing
+- **Real SSE chunked streaming** — 5s chunks with 1s overlap for progressive transcription (#28)
+- **Long audio chunking at silence boundaries** — files >25s split at silences (#24)
+- **Silero VAD gating** — skips GPU inference for silent WS frames (#25)
+- **Reduced WS buffer** from 800ms to 450ms, overlap from 300ms to 150ms (#26)
+
+### Scheduling & Concurrency
+- **Priority scheduling** — WS requests (priority=0) preempt HTTP (priority=1) via min-heap queue (#27)
+- **KV-cache reuse** across WebSocket chunks for reduced re-computation (#32)
+- **Dual-model strategy** — optional 0.6B for fast WS partials, 1.7B for finals (#33)
+
+### Quantization & Acceleration
+- **INT8 W8A8 quantization** via bitsandbytes (opt-in: QUANTIZE=int8) — ~50% VRAM reduction (#29)
+- **FP8 quantization** via torchao (opt-in: QUANTIZE=fp8) — requires sm_89+ GPU (#34)
+- **CUDA Graphs kernel warming** — 3 extra warmup passes (opt-in: USE_CUDA_GRAPHS=true) (#30)
+- **ONNX Runtime encoder** — optional ORT-accelerated encoder (opt-in: ONNX_ENCODER_PATH) (#31)
+
+### Docker
+- Added **silero-vad**, **bitsandbytes**, **onnxruntime-gpu**, **torchao** dependencies
+- New script: **src/export_onnx.py** for encoder export
+
 ## v0.4.0 — 2026-02-20
 
 ### Model & Configuration
