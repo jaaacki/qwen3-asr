@@ -90,3 +90,20 @@
 #   # Use WebSocket client from docs/WEBSOCKET_USAGE.md to stream audio
 #   # Verify WS connection works and transcription is correct
 # Expected: ~1ms CPU savings per WS frame, same functionality
+
+# ─── Issue #12: torchaudio resampling ─────────────────────────────────
+# Change: replaced librosa.resample with torchaudio.transforms.Resample
+# Verify: upload a 44.1kHz or 48kHz audio file, should auto-resample correctly
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio_44k.wav"
+# Expected: correct transcription, no librosa import in logs
+
+# ─── Issue #19: representative warmup ─────────────────────────────────
+# Change: warmup now uses low-amplitude noise instead of silence
+# Verify: docker compose logs shows "Warming up GPU..." with no errors
+# Expected: faster first-request latency (warmup exercises more kernel paths)
+
+# ─── Issue #8: repetition detection ───────────────────────────────────
+# Change: detect_and_fix_repetitions() applied to all transcription outputs
+# Verify: noisy audio that previously caused loops ("thank you thank you thank you...")
+#   should now return clean output
+# curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@noisy_audio.wav"
