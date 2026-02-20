@@ -389,30 +389,58 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
             except (TypeError, AttributeError, NotImplementedError):
                 pass
 
-        # Fallback: run full transcription via thread pool
-        results = await asyncio.get_event_loop().run_in_executor(
-            _infer_executor,
-            lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
-        )
+        # Chunked progressive transcription: yield results as each chunk is processed
+        CHUNK_SAMPLES = TARGET_SR * 5  # 5-second chunks
+        OVERLAP_SAMPLES = TARGET_SR    # 1-second overlap between chunks
 
-        if results and len(results) > 0:
-            text = detect_and_fix_repetitions(results[0].text)
-            language_code = results[0].language
-            data = {
-                "text": text,
-                "language": language_code,
-                "is_final": True
-            }
-            if return_timestamps and hasattr(results[0], 'timestamps') and results[0].timestamps:
-                data["timestamps"] = results[0].timestamps
+        if len(audio) <= CHUNK_SAMPLES:
+            # Short audio: single batch
+            async with _infer_semaphore:
+                results = await asyncio.get_event_loop().run_in_executor(
+                    _infer_executor,
+                    lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
+                )
+            if results and len(results) > 0:
+                text = detect_and_fix_repetitions(results[0].text)
+                data = {"text": text, "language": results[0].language, "is_final": True}
+                if return_timestamps and hasattr(results[0], 'timestamps') and results[0].timestamps:
+                    data["timestamps"] = results[0].timestamps
+            else:
+                data = {"text": "", "language": lang_code or "auto", "is_final": True}
+            yield f"data: {json.dumps(data)}\n\n"
         else:
-            data = {
-                "text": "",
-                "language": lang_code or "auto",
-                "is_final": True
-            }
+            # Long audio: process in 5s chunks, stream each result
+            start = 0
+            chunk_index = 0
+            while start < len(audio):
+                end = min(start + CHUNK_SAMPLES, len(audio))
+                chunk = audio[start:end]
+                is_last = (end >= len(audio))
 
-        yield f"data: {json.dumps(data)}\n\n"
+                async with _infer_semaphore:
+                    results = await asyncio.get_event_loop().run_in_executor(
+                        _infer_executor,
+                        lambda c=chunk: _do_transcribe(c, sr, lang_code, return_timestamps)
+                    )
+
+                if results and len(results) > 0:
+                    text = detect_and_fix_repetitions(results[0].text)
+                    data = {
+                        "text": text,
+                        "language": results[0].language,
+                        "is_final": is_last,
+                        "chunk_index": chunk_index,
+                    }
+                else:
+                    data = {"text": "", "language": lang_code or "auto", "is_final": is_last, "chunk_index": chunk_index}
+
+                yield f"data: {json.dumps(data)}\n\n"
+                chunk_index += 1
+
+                if is_last:
+                    break
+                start = end - OVERLAP_SAMPLES  # overlap for context
+
         yield f"data: {json.dumps({'done': True})}\n\n"
 
     except Exception as e:

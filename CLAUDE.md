@@ -61,7 +61,6 @@ All server logic lives in `src/server.py` (~545 lines). Key subsystems:
 Input audio → mono conversion → float32 normalization → resample to 16kHz (librosa) → peak normalization to [-1, 1]
 
 ### Known Limitations
-- SSE streaming endpoint (`/v1/audio/transcriptions/stream`) falls back to full non-streaming transcription
 - No long-audio chunking — files >30s may degrade quality
 - No repetition/hallucination detection for noisy audio
 - Uses `sdpa` attention (not Flash Attention 2, ~20% slower)
