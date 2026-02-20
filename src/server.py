@@ -591,28 +591,47 @@ async def transcribe(
 
 
 def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
-    """Run inference in a thread pool."""
+    """Run inference in a thread pool, using ONNX encoder if available."""
     # Use pinned memory buffer for faster CPU→GPU transfer if available.
     if _PINNED_AUDIO_BUFFER is not None and len(audio) <= _PINNED_BUFFER_SIZE:
         _PINNED_AUDIO_BUFFER[:len(audio)].copy_(torch.from_numpy(audio))
         audio = _PINNED_AUDIO_BUFFER[:len(audio)].numpy()
 
     m = (_fast_model if use_fast and _fast_model is not None else model)
+
+    def _run_transcribe():
+        return m.transcribe(
+            (audio, sr), language=lang_code, return_time_stamps=return_timestamps
+        )
+
     with torch.inference_mode():
-        if _cuda_stream is not None:
+        # Route through ONNX encoder if loaded (opt-in via ONNX_ENCODER_PATH).
+        if _onnx_session is not None and hasattr(m, 'encoder'):
+            _orig_fwd = m.encoder.forward
+            try:
+                def _onnx_fwd(*args, **kwargs):
+                    inp = args[0] if args else kwargs.get('input_features')
+                    if inp is None:
+                        return _orig_fwd(*args, **kwargs)
+                    ort_out = _onnx_session.run(
+                        None, {"input_features": inp.cpu().numpy()}
+                    )
+                    return (torch.from_numpy(ort_out[0]).to(inp.device),)
+                m.encoder.forward = _onnx_fwd
+                if _cuda_stream is not None:
+                    with torch.cuda.stream(_cuda_stream):
+                        results = _run_transcribe()
+                    _cuda_stream.synchronize()
+                else:
+                    results = _run_transcribe()
+            finally:
+                m.encoder.forward = _orig_fwd
+        elif _cuda_stream is not None:
             with torch.cuda.stream(_cuda_stream):
-                results = m.transcribe(
-                    (audio, sr),
-                    language=lang_code,
-                    return_time_stamps=return_timestamps
-                )
+                results = _run_transcribe()
             _cuda_stream.synchronize()
         else:
-            results = m.transcribe(
-                (audio, sr),
-                language=lang_code,
-                return_time_stamps=return_timestamps
-            )
+            results = _run_transcribe()
     return results
 
 
