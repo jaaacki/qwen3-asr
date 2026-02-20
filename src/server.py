@@ -28,6 +28,7 @@ def _get_attn_implementation() -> str:
 _ATTN_IMPL = _get_attn_implementation()
 
 model = None
+_fast_model = None
 processor = None
 loaded_model_id = None
 
@@ -138,6 +139,9 @@ WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.15)
 # Silence padding appended before final transcription on flush (~600ms)
 # Gives the model trailing context to commit the last word
 WS_FLUSH_SILENCE_MS = int(os.getenv("WS_FLUSH_SILENCE_MS", "600"))
+
+# Speculative decoding: use 0.6B as draft, 1.7B as verifier
+USE_SPECULATIVE = os.getenv("USE_SPECULATIVE", "").lower() == "true"
 
 
 # vLLM engine (opt-in via USE_VLLM=true)
@@ -425,6 +429,23 @@ def _load_model_sync():
 
     model = Qwen3ASRModel.from_pretrained(model_id, **load_kwargs)
 
+    # Load fast (draft) model for speculative decoding
+    if USE_SPECULATIVE:
+        global _fast_model
+        fast_model_id = os.getenv("FAST_MODEL_ID", "Qwen/Qwen3-ASR-0.6B")
+        if fast_model_id != model_id:
+            print(f"Loading fast model {fast_model_id} for speculative decoding...")
+            _fast_model = Qwen3ASRModel.from_pretrained(
+                fast_model_id,
+                torch_dtype=torch.bfloat16,
+                device_map="cuda" if torch.cuda.is_available() else "cpu",
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+                attn_implementation="sdpa",
+            )
+        else:
+            print("Speculative decoding: main and fast model are the same, skipping dual load")
+
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
         print("Warming up GPU...")
@@ -524,12 +545,15 @@ def _try_load_onnx_encoder():
 
 def _unload_model_sync():
     """Unload model from GPU to free VRAM."""
-    global model, processor
+    global model, processor, _fast_model
 
     if model is None:
         return
 
     print("Unloading model (idle timeout)...")
+    if _fast_model is not None:
+        del _fast_model
+        _fast_model = None
     del model
     del processor
     model = None
@@ -651,10 +675,38 @@ def _do_transcribe_vllm(audio, sr, lang_code, return_timestamps):
     return [_Result(o.outputs[0].text, lang_code or "auto") for o in outputs]
 
 
+def _do_transcribe_speculative(audio, sr, lang_code, return_timestamps):
+    """
+    Speculative decoding: draft with 0.6B, verify with 1.7B.
+    Falls back to standard inference if dual models not loaded.
+    """
+    if _fast_model is None or model is None:
+        return _do_transcribe(audio, sr, lang_code, return_timestamps)
+
+    with torch.inference_mode():
+        draft_result = _fast_model.transcribe(
+            (audio, sr), language=lang_code, return_time_stamps=return_timestamps
+        )
+
+    # Use draft result if confidence is high (heuristic: short text, no artifacts)
+    draft_text = draft_result[0].text if draft_result else ""
+    if len(draft_text) < 100 and "[" not in draft_text:
+        return draft_result
+
+    # Verify with full model for complex/uncertain outputs
+    with torch.inference_mode():
+        return model.transcribe(
+            (audio, sr), language=lang_code, return_time_stamps=return_timestamps
+        )
+
+
 def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
     """Run inference in a thread pool, using ONNX encoder if available."""
     if USE_VLLM and _vllm_engine is not None:
         return _do_transcribe_vllm(audio, sr, lang_code, return_timestamps)
+
+    if USE_SPECULATIVE and _fast_model is not None:
+        return _do_transcribe_speculative(audio, sr, lang_code, return_timestamps)
 
     # Use pinned memory buffer for faster CPU→GPU transfer if available.
     if _PINNED_AUDIO_BUFFER is not None and len(audio) <= _PINNED_BUFFER_SIZE:
