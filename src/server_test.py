@@ -179,3 +179,15 @@
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 #   # Start WS stream while HTTP is processing — WS should not be blocked
 # Expected: WS transcription completes even while HTTP request is in progress
+
+# ─── Issue #29: INT8 W8A8 quantization with bitsandbytes ────────────
+# Change: Added opt-in INT8 quantization via QUANTIZE=int8 env var.
+#         Uses bitsandbytes BitsAndBytesConfig for 8-bit model loading.
+#         Reduces VRAM usage by ~50% at minor accuracy cost.
+# Verify:
+#   Set QUANTIZE=int8 in docker-compose.yml environment
+#   docker compose up -d --build
+#   docker compose logs | grep "INT8"
+#   Expected: "INT8 quantization enabled (bitsandbytes)"
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: transcription works, gpu_allocated_mb ~50% less than default
