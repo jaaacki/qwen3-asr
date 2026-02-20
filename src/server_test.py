@@ -247,3 +247,38 @@
 #   Expected (older GPU): "FP8 requires sm_89+, skipping"
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 # Expected: transcription works normally
+
+# ─── Issue #35: Gateway + Worker architecture ────────────────────────
+# Change: GATEWAY_MODE=true splits into gateway (port 8000) + worker (port 8001).
+#         Gateway manages worker lifecycle; killing worker reclaims all model RAM.
+# Verify:
+#   GATEWAY_MODE=true docker compose up -d --build
+#   curl http://localhost:8100/health
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: all endpoints work through gateway proxy
+# Without GATEWAY_MODE: monolithic server behavior (default)
+
+
+def test_gateway_has_all_routes():
+    """Verify gateway exposes all required proxy routes."""
+    import gateway
+    routes = [r.path for r in gateway.app.routes]
+    assert "/health" in routes
+    assert "/v1/audio/transcriptions" in routes
+    assert "/v1/audio/transcriptions/stream" in routes
+    assert "/ws/transcribe" in routes
+
+
+def test_gateway_worker_management():
+    """Verify gateway has worker lifecycle functions."""
+    from gateway import _ensure_worker, _kill_worker, _idle_watchdog
+    assert callable(_ensure_worker)
+    assert callable(_kill_worker)
+    assert callable(_idle_watchdog)
+
+
+def test_worker_reuses_server_code():
+    """Verify worker imports from server.py rather than duplicating."""
+    import worker
+    import server
+    assert worker.preprocess_audio is server.preprocess_audio
