@@ -102,6 +102,9 @@ def _load_model_sync():
 
     print(f"Loading {model_id}...")
 
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+
     processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
     model = Qwen3ASRModel.from_pretrained(
