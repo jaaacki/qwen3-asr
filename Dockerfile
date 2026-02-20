@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir \
     websockets \
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 
-COPY server.py /app/server.py
+COPY src/server.py /app/server.py
 
 EXPOSE 8000
 
