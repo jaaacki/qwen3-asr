@@ -6,6 +6,7 @@ import io
 import os
 import gc
 import json
+import re
 import asyncio
 import time
 import numpy as np
@@ -56,6 +57,36 @@ def release_gpu_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
+
+
+def detect_and_fix_repetitions(text: str, max_repeats: int = 2) -> str:
+    """Remove pathological repetitions from ASR output."""
+    if not text or len(text) < 10:
+        return text
+
+    # Pattern 1: repeated single words (e.g. "um um um um")
+    text = re.sub(r'\b(\w+)( \1){2,}\b', r'\1', text)
+
+    # Pattern 2: repeated short phrases (3-8 words, repeating 3+ times)
+    words = text.split()
+    for phrase_len in range(3, min(9, len(words) // 3 + 1)):
+        i = 0
+        result = []
+        while i < len(words):
+            phrase = words[i:i + phrase_len]
+            count = 1
+            j = i + phrase_len
+            while j + phrase_len <= len(words) and words[j:j + phrase_len] == phrase:
+                count += 1
+                j += phrase_len
+            result.extend(phrase)
+            if count > max_repeats:
+                i = j  # skip the extra repeats
+            else:
+                i += phrase_len
+        words = result
+
+    return ' '.join(words)
 
 
 def preprocess_audio(audio: np.ndarray, sr: int) -> tuple[np.ndarray, int]:
@@ -242,7 +273,7 @@ async def transcribe(
         return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
     if results and len(results) > 0:
-        text = results[0].text
+        text = detect_and_fix_repetitions(results[0].text)
         language_code = results[0].language
         if return_timestamps and hasattr(results[0], 'timestamps') and results[0].timestamps:
             return {"text": text, "language": language_code, "timestamps": results[0].timestamps}
@@ -277,7 +308,7 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
                 ):
                     if hasattr(partial_result, 'text'):
                         data = {
-                            "text": partial_result.text,
+                            "text": detect_and_fix_repetitions(partial_result.text),
                             "language": getattr(partial_result, 'language', lang_code or 'auto'),
                             "is_final": getattr(partial_result, 'is_final', False)
                         }
@@ -296,7 +327,7 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
         )
 
         if results and len(results) > 0:
-            text = results[0].text
+            text = detect_and_fix_repetitions(results[0].text)
             language_code = results[0].language
             data = {
                 "text": text,
@@ -540,7 +571,7 @@ async def _transcribe_with_context(
             )
 
         if results and len(results) > 0:
-            return results[0].text
+            return detect_and_fix_repetitions(results[0].text)
         return ""
 
     except asyncio.TimeoutError:
