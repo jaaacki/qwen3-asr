@@ -144,3 +144,9 @@
 # Verify: docker compose logs | grep "CUDA inference stream"
 # Expected: "CUDA inference stream created"
 # Benefit: enables async transfer/compute overlap (measurable with CUDA profiler)
+
+# ─── Issue #26: Reduce WebSocket buffer from 800ms to 450ms ──────────
+# Change: WS_BUFFER_SIZE default changed from 25600 to 14400 (~450ms)
+#         WS_OVERLAP_SIZE default changed from 9600 to 4800 (~150ms)
+# Verify: WebSocket streaming still works with lower latency
+# Expected: faster partial transcriptions, same accuracy
