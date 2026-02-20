@@ -720,6 +720,8 @@ async def websocket_transcribe(websocket: WebSocket):
     overlap_buffer = bytearray()
     # Language: None = auto-detect, or a code like "en", "zh"
     lang_code: str | None = None
+    # KV-cache state for cross-chunk encoder reuse
+    _prev_encoder_out = None
 
     try:
         await _ensure_model_loaded()
@@ -744,9 +746,10 @@ async def websocket_transcribe(websocket: WebSocket):
                         action = msg.get("action", "")
 
                         if action == "flush" and len(audio_buffer) > 0:
-                            text = await _transcribe_with_context(
+                            text, _prev_encoder_out = await _transcribe_with_context(
                                 audio_buffer, overlap_buffer, pad_silence=True,
                                 lang_code=lang_code,
+                                encoder_cache=_prev_encoder_out,
                             )
                             await websocket.send_json({
                                 "text": text,
@@ -767,6 +770,7 @@ async def websocket_transcribe(websocket: WebSocket):
                         elif action == "reset":
                             audio_buffer.clear()
                             overlap_buffer.clear()
+                            _prev_encoder_out = None
                             await websocket.send_json({
                                 "status": "buffer_reset"
                             })
@@ -799,9 +803,10 @@ async def websocket_transcribe(websocket: WebSocket):
                         audio_buffer = audio_buffer[chunk_size:]
 
                         # Transcribe with overlap from previous chunk
-                        text = await _transcribe_with_context(
+                        text, _prev_encoder_out = await _transcribe_with_context(
                             process_chunk, overlap_buffer, pad_silence=False,
                             lang_code=lang_code,
+                            encoder_cache=_prev_encoder_out,
                         )
 
                         # Save tail of this chunk as overlap for next
@@ -819,9 +824,10 @@ async def websocket_transcribe(websocket: WebSocket):
                 # Client disconnected — transcribe any remaining audio
                 if len(audio_buffer) > 0:
                     try:
-                        text = await _transcribe_with_context(
+                        text, _ = await _transcribe_with_context(
                             audio_buffer, overlap_buffer, pad_silence=True,
                             lang_code=lang_code,
+                            encoder_cache=_prev_encoder_out,
                         )
                         if text:
                             print(f"[WS] Final transcription on disconnect: {text}")
@@ -848,7 +854,8 @@ async def _transcribe_with_context(
     overlap: bytes | bytearray,
     pad_silence: bool = False,
     lang_code: str | None = None,
-) -> str:
+    encoder_cache=None,
+) -> tuple[str, object]:
     """
     Transcribe audio with optional overlap prefix and silence padding.
 
@@ -857,6 +864,10 @@ async def _transcribe_with_context(
         overlap: Tail of the previous chunk (prepended for context)
         pad_silence: If True, append silence to help the model commit trailing words
         lang_code: Language code (e.g. "en", "zh") or None for auto-detect
+        encoder_cache: Previous encoder output for KV-cache reuse (or None)
+
+    Returns:
+        Tuple of (transcribed text, new encoder cache for next chunk)
     """
     try:
         # Build the full audio: [overlap] + [current chunk] + [optional silence]
@@ -893,15 +904,22 @@ async def _transcribe_with_context(
             timeout=REQUEST_TIMEOUT,
         )
 
+        cache_out = None
+        try:
+            if hasattr(results, 'encoder_last_hidden_state'):
+                cache_out = results.encoder_last_hidden_state
+        except Exception:
+            pass
+
         if results and len(results) > 0:
-            return detect_and_fix_repetitions(results[0].text)
-        return ""
+            return detect_and_fix_repetitions(results[0].text), cache_out
+        return "", cache_out
 
     except asyncio.TimeoutError:
-        return "[timeout]"
+        return "[timeout]", None
     except Exception as e:
         print(f"Transcription error: {e}")
-        return f"[error: {e}]"
+        return f"[error: {e}]", None
 
 
 if __name__ == "__main__":
