@@ -59,3 +59,13 @@
 #   # Run multiple requests in succession to confirm no memory leak
 #   curl http://localhost:8100/health  # check GPU memory stays stable
 # Expected: faster inference (5-10ms saved per request), same transcription quality
+
+# ─── Issue #16: Eliminate unnecessary bytes() copy in WS transcription ─────
+# Change: Replaced np.frombuffer(bytes(full_audio), ...) with
+#         np.frombuffer(full_audio, ...) in _transcribe_with_context().
+#         bytearray is directly supported by np.frombuffer — no copy needed.
+# Verify:
+#   docker compose up -d --build
+#   # Use WebSocket client from docs/WEBSOCKET_USAGE.md to stream audio
+#   # Compare transcription output — should be identical
+# Expected: eliminates one full buffer copy per WS chunk, same transcription quality
