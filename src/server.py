@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 import torch
@@ -8,6 +9,7 @@ import gc
 import json
 import re
 import asyncio
+import concurrent.futures
 import time
 import numpy as np
 from qwen_asr import Qwen3ASRModel, parse_asr_output
@@ -34,6 +36,13 @@ _infer_semaphore = asyncio.Semaphore(1)
 
 # Lock to prevent concurrent load/unload
 _model_lock = asyncio.Lock()
+
+# Dedicated single-threaded executor for GPU inference
+# Ensures inference always runs on the same OS thread (better GPU context affinity)
+_infer_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="qwen3-asr-infer",
+)
 
 # Request timeout in seconds
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "300"))
@@ -226,7 +235,7 @@ async def _ensure_model_loaded():
         if model is not None:
             _last_used = time.time()
             return
-        await asyncio.get_event_loop().run_in_executor(None, _load_model_sync)
+        await asyncio.get_event_loop().run_in_executor(_infer_executor, _load_model_sync)
         _last_used = time.time()
 
 
@@ -239,12 +248,10 @@ async def _idle_watchdog():
         if time.time() - _last_used > IDLE_TIMEOUT:
             async with _model_lock:
                 if model is not None and time.time() - _last_used > IDLE_TIMEOUT:
-                    await asyncio.get_event_loop().run_in_executor(None, _unload_model_sync)
+                    await asyncio.get_event_loop().run_in_executor(_infer_executor, _unload_model_sync)
 
 
-@app.on_event("startup")
-async def startup():
-    asyncio.create_task(_idle_watchdog())
+### NOTE: startup/shutdown handled via lifespan context manager (see app = FastAPI(..., lifespan=lifespan))
 
 
 @app.get("/health")
@@ -283,7 +290,7 @@ async def transcribe(
         async with _infer_semaphore:
             results = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
-                    None,
+                    _infer_executor,
                     lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
                 ),
                 timeout=REQUEST_TIMEOUT
@@ -341,7 +348,7 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
 
         # Fallback: run full transcription via thread pool
         results = await asyncio.get_event_loop().run_in_executor(
-            None,
+            _infer_executor,
             lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
         )
 
@@ -583,7 +590,7 @@ async def _transcribe_with_context(
         async with _infer_semaphore:
             results = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
-                    None,
+                    _infer_executor,
                     lambda: _do_transcribe(audio, sr, lang_code, False)
                 ),
                 timeout=REQUEST_TIMEOUT,
