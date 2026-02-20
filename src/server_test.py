@@ -336,3 +336,23 @@ def test_do_transcribe_has_trt_path():
     from server import _do_transcribe
     source = inspect.getsource(_do_transcribe)
     assert "_trt_encoder" in source
+
+# ─── Issue #38: Speculative decoding for ASR (SpecASR) ────────────────
+# Change: USE_SPECULATIVE=true enables draft (0.6B) + verify (1.7B) decoding.
+#         _do_transcribe_speculative() drafts with fast model, verifies complex outputs.
+# Verify:
+#   USE_SPECULATIVE=true MODEL_ID=Qwen/Qwen3-ASR-1.7B docker compose up -d --build
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: transcription works, short audio uses draft only (~2x speed)
+
+
+def test_speculative_fn_exists():
+    """Verify speculative decoding function exists."""
+    from server import _do_transcribe_speculative
+    assert callable(_do_transcribe_speculative)
+
+
+def test_fast_model_global():
+    """Verify _fast_model global is defined."""
+    from server import _fast_model
+    assert _fast_model is None  # not loaded without USE_SPECULATIVE
