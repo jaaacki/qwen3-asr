@@ -35,60 +35,93 @@ No test suite exists — validation is done via curl/manual testing against the 
 
 ## Architecture
 
-All server logic lives in `src/server.py` (~545 lines). Key subsystems:
+### File Organization
+
+- `src/server.py` — Core FastAPI server with inference logic, priority queue, WebSocket handling (~1170 lines)
+- `src/gateway.py` — Gateway proxy mode (GATEWAY_MODE=true); routes to worker subprocess
+- `src/worker.py` — Inference worker for gateway mode; imports logic from server.py
+- `src/export_onnx.py` — Export encoder to ONNX for ORT acceleration
+- `src/build_trt.py` — Build TensorRT engine for encoder
+
+### Concurrency Model
+
+**PriorityInferQueue** (replaces simple semaphore):
+- Min-heap priority queue with `priority: int` (lower = higher priority)
+- WebSocket requests use priority=0, HTTP uploads use priority=1
+- This prevents long file uploads from blocking real-time WebSocket transcription
+- Single dedicated ThreadPoolExecutor (`max_workers=1`) for all GPU inference
+- All inference runs via `run_in_executor()` to keep async event loop unblocked
 
 ### Model Lifecycle
-- Model is loaded on first request, not at startup
-- `_idle_watchdog()` background task unloads the model after `IDLE_TIMEOUT` seconds of inactivity (default 120s, 0 = disabled)
-- `asyncio.Lock()` prevents load/unload race conditions
-- GPU memory explicitly released after every inference via `release_gpu_memory()`
 
-### Concurrency
-- `asyncio.Semaphore(1)` serializes all GPU inference — one request at a time
-- All inference runs in `run_in_executor()` to keep the async event loop non-blocking
-- WebSocket and HTTP requests share the same semaphore (file uploads can block real-time WS calls)
+- Model loads on first request (not at startup in standalone mode)
+- `_idle_watchdog()` background task unloads after `IDLE_TIMEOUT` seconds (default 120s, 0 = disabled)
+- `asyncio.Lock()` prevents load/unload race conditions
+- GPU memory explicitly released via `release_gpu_memory()` after operations
+
+**Gateway Mode** (`GATEWAY_MODE=true`):
+- Splits into gateway (port 8000) + worker subprocess (port 8001)
+- Gateway proxies all requests to worker via HTTP/WebSocket
+- Killing worker process reclaims ALL RAM/VRAM (useful for memory leak scenarios)
 
 ### WebSocket Real-Time Transcription (`/ws/transcribe`)
+
 - Accepts raw PCM: 16-bit little-endian, 16kHz, mono
-- Buffers ~450ms of audio before transcribing (`WS_BUFFER_SIZE`)
-- **Overlap**: Last 150ms of each chunk is prepended to the next chunk to prevent word splits at boundaries (`WS_OVERLAP_SIZE`)
-- **Flush silence padding**: 600ms of silence appended before final transcription on `flush` command to help the model commit trailing words (`WS_FLUSH_SILENCE_MS`)
-- Control messages: `flush` (process remaining buffer), `reset` (clear state), `config` (set language)
-- Buffer is transcribed on client disconnect (no audio loss)
-- Responses: `{"text": "...", "is_partial": false, "is_final": false}`
+- Buffers ~450ms of audio (`WS_BUFFER_SIZE=14400` bytes)
+- **Overlap**: Last 150ms of each chunk prepended to next chunk (`WS_OVERLAP_SIZE=4800`)
+- **Silence padding**: 600ms silence appended on `flush` command to commit trailing words (`WS_FLUSH_SILENCE_MS`)
+- **VAD gating**: Silero VAD skips inference for silent frames (no GPU usage for silence)
+- **Dual-model**: If `DUAL_MODEL=true`, uses 0.6B for partials, 1.7B for final transcription
+- Control messages: `flush`, `reset`, `config` (set language)
+- Buffer transcribed on disconnect (no audio loss)
 
 ### Audio Preprocessing Pipeline
-Input audio → mono conversion → float32 normalization → resample to 16kHz (librosa) → peak normalization to [-1, 1]
 
-### Known Limitations
-- No repetition/hallucination detection for noisy audio
-- Uses `sdpa` attention (not Flash Attention 2, ~20% slower)
-- No `torch.compile` optimization
+Input audio → mono conversion → float32 normalization → resample to 16kHz (torchaudio) → peak normalize to [-1, 1]
+
+WebSocket fast path skips resampling (audio already at 16kHz).
+
+### Optimizations (Opt-in)
+
+| Feature | Env Var | Description |
+|---------|---------|-------------|
+| Flash Attention 2 | auto-detected | Falls back to SDPA if unavailable |
+| torch.compile | always on | `mode="reduce-overhead"` for repeated inference |
+| Pinned memory | auto | Pre-allocated 30s buffer for fast CPU→GPU transfer |
+| CUDA streams | auto | Async DMA pipeline for transfer/compute overlap |
+| INT8 quantization | `QUANTIZE=int8` | bitsandbytes W8A8 (~50% VRAM reduction) |
+| FP8 quantization | `QUANTIZE=fp8` | torchao (requires sm_89+ Hopper/Ada) |
+| Speculative decoding | `USE_SPECULATIVE=true` | 0.6B draft + 1.7B verifier (~2x speed) |
+| ONNX encoder | `ONNX_ENCODER_PATH` | ORT-accelerated encoder forward pass |
+| TensorRT encoder | `TRT_ENCODER_PATH` | Compiled TRT engine for encoder |
+| vLLM backend | `USE_VLLM=true` | PagedAttention serving engine |
+| CUDA Graphs warmup | `USE_CUDA_GRAPHS=true` | 3 extra warmup passes for kernel caching |
+| NUMA CPU pinning | `NUMA_NODE=0` | Pin to GPU-collocated NUMA node |
+| Granian ASGI | `USE_GRANIAN=true` | Rust-based ASGI server (alternative to uvicorn) |
 
 ## Key Environment Variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MODEL_ID` | `Qwen/Qwen3-ASR-0.6B` | HuggingFace model (1.7B gives better multilingual accuracy) |
-| `IDLE_TIMEOUT` | `120` | Seconds before model unloads from GPU (0 = keep loaded) |
+| `MODEL_ID` | `Qwen/Qwen3-ASR-1.7B` | HuggingFace model (0.6B for speed, 1.7B for accuracy) |
+| `FAST_MODEL_ID` | `Qwen/Qwen3-ASR-0.6B` | Draft/partial model for speculative/DUAL_MODE |
+| `IDLE_TIMEOUT` | `120` | Seconds before model unloads (0 = keep loaded) |
 | `REQUEST_TIMEOUT` | `300` | Max inference time per request |
 | `WS_BUFFER_SIZE` | `14400` | WebSocket audio buffer (~450ms at 16kHz) |
 | `WS_OVERLAP_SIZE` | `4800` | Overlap between chunks (~150ms) |
-| `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush |
+| `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush (ms) |
+| `GATEWAY_MODE` | `false` | Run as gateway+worker split |
+| `DUAL_MODEL` | `false` | Load both 0.6B and 1.7B models |
+| `QUANTIZE` | `""` | `int8` or `fp8` |
 
 Port mapping: container 8000 → host 8100.
-
-## Agent Rules
-
-Operating rules live in `.agent-rules/` — read and follow them at all times:
-
-- **`prompt_agent-team-rules.md`** — Three roles: Architect (1), Builder (N), Critic (1+). Scale Builders to independent issues. Coordinate through Architect.
-- **`prompt_docs-versioning-rules.md`** — Four living docs updated after every issue: ROADMAP.md, LEARNING_LOG.md, CHANGELOG.md, README.md. Versioning: patch=issue, minor=milestone, major=vision.
-- **`prompt_git-workflow-rules.md`** — No code without an issue. Issue title format: `[Enhancement/Bug/Fix/Docs/Refactor/Chore] Description`. Branch: `milestone/{phase} → issue-{N}-{desc}`. Bugs branch from main. Squash issue PRs into milestone; merge commit milestone into main.
-- **`prompt_testing-rules.md`** — Test files live next to source (`server_test.py`). Tests ship in same PR as code. Always report `Tests: X passed, Y failed, Z skipped`.
 
 ## Docs
 
 - `docs/WEBSOCKET_USAGE.md` — WebSocket protocol, connection format, example Python client
+- `docs/GRANIAN_BENCHMARK.md` — Performance comparison of ASGI servers
 - `RESEARCH_ANALYSIS.md` — Architecture comparison with official Qwen3-ASR SDK and vLLM backend
-- `improvements.md` — Prioritized optimization recommendations (Flash Attention, torch.compile, chunking, etc.)
+- `improvements.md` — Prioritized optimization recommendations
+- `ROADMAP.md` — Milestone planning
+- `CHANGELOG.md` — Version history
+- `LEARNING_LOG.md` — Technical learnings and decisions

@@ -416,7 +416,7 @@ def _set_cpu_affinity():
 
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
-    global model, processor, loaded_model_id, _last_used
+    global model, processor, loaded_model_id, _last_used, _fast_model
 
     if model is not None:
         return
@@ -489,7 +489,6 @@ def _load_model_sync():
 
     # Load fast (draft) model for speculative decoding
     if USE_SPECULATIVE:
-        global _fast_model
         fast_model_id = os.getenv("FAST_MODEL_ID", "Qwen/Qwen3-ASR-0.6B")
         if fast_model_id != model_id:
             print(f"Loading fast model {fast_model_id} for speculative decoding...")
@@ -538,7 +537,6 @@ def _load_model_sync():
 
     if os.getenv("DUAL_MODEL", "").lower() == "true" and torch.cuda.is_available():
         try:
-            global _fast_model
             print(f"Loading fast model ({_fast_model_id}) for partial transcriptions...")
             _fast_model = Qwen3ASRModel.from_pretrained(
                 _fast_model_id,
