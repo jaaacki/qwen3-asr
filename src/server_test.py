@@ -119,3 +119,10 @@
 # Verify: docker compose logs | grep "Attention implementation:"
 # Expected: "Attention implementation: flash_attention_2"
 # Fallback: if flash-attn build fails, logs will show "sdpa"
+
+# ─── Issue #9: torch.compile ─────────────────────────────────────────
+# Change: model compiled with torch.compile(mode='reduce-overhead')
+# Verify: docker compose logs | grep "torch.compile"
+# WARNING: First request after startup will be slow (30-60s compilation)
+# Subsequent requests will be 10-30% faster
+# curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
