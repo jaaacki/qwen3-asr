@@ -150,3 +150,10 @@
 #         WS_OVERLAP_SIZE default changed from 9600 to 4800 (~150ms)
 # Verify: WebSocket streaming still works with lower latency
 # Expected: faster partial transcriptions, same accuracy
+
+# ─── Issue #28: Real SSE streaming via chunked transcription ─────────
+# Change: sse_transcribe_generator() now chunks long audio into 5s segments
+#         with 1s overlap, streaming each chunk's result progressively.
+#         Short audio (<5s) still runs as single batch.
+# Verify: curl with large audio file should see multiple SSE events
+# Expected: progressive results with chunk_index, is_final on last chunk
