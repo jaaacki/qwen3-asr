@@ -153,6 +153,73 @@ def preprocess_audio_ws(audio: np.ndarray) -> np.ndarray:
     return audio
 
 
+def chunk_audio_at_silence(
+    audio: np.ndarray,
+    sr: int,
+    max_chunk_s: float = 25.0,
+    silence_thresh: float = 0.01,
+    min_silence_s: float = 0.3,
+) -> list[np.ndarray]:
+    """
+    Split long audio into chunks at silence boundaries.
+    Falls back to fixed-length chunks if no silence is found.
+
+    Args:
+        audio: float32 numpy array
+        sr: sample rate
+        max_chunk_s: maximum chunk length in seconds
+        silence_thresh: RMS below this threshold = silence
+        min_silence_s: minimum silence duration to split on
+
+    Returns:
+        List of audio chunks
+    """
+    max_chunk = int(max_chunk_s * sr)
+
+    if len(audio) <= max_chunk:
+        return [audio]
+
+    min_silence_samples = int(min_silence_s * sr)
+    frame_length = int(0.02 * sr)  # 20ms frames
+
+    # Compute RMS energy per frame
+    frames = np.array_split(audio, max(1, len(audio) // frame_length))
+    rms = np.array([np.sqrt(np.mean(f**2)) for f in frames])
+
+    # Find silence frames
+    silence_mask = rms < silence_thresh
+
+    # Find silence runs long enough to split on
+    chunks = []
+    last_split = 0
+
+    i = 0
+    while i < len(rms):
+        frame_start = i * frame_length
+
+        # Check if we're past max chunk size and in silence
+        if frame_start - last_split >= max_chunk and silence_mask[i]:
+            # Find end of this silence run
+            j = i
+            while j < len(rms) and silence_mask[j]:
+                j += 1
+            silence_end = min(j * frame_length, len(audio))
+            silence_mid = (frame_start + silence_end) // 2
+
+            if silence_mid - last_split >= min_silence_samples:
+                chunks.append(audio[last_split:silence_mid])
+                last_split = silence_mid
+                i = j
+                continue
+        i += 1
+
+    # Add remaining audio
+    if last_split < len(audio):
+        chunks.append(audio[last_split:])
+
+    return chunks if chunks else [audio]
+
+
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
     global model, processor, loaded_model_id, _last_used
@@ -310,28 +377,32 @@ async def transcribe(
     audio, sr = sf.read(io.BytesIO(audio_bytes))
     audio, sr = preprocess_audio(audio, sr)
 
+    # Split long audio at silence boundaries
+    if len(audio) > TARGET_SR * 25:
+        audio_chunks = chunk_audio_at_silence(audio, sr)
+    else:
+        audio_chunks = [audio]
+
     lang_code = None if language == "auto" else language
 
-    try:
-        async with _infer_semaphore:
-            results = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    _infer_executor,
-                    lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
-                ),
-                timeout=REQUEST_TIMEOUT
-            )
-    except asyncio.TimeoutError:
-        return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+    all_texts = []
+    for chunk in audio_chunks:
+        try:
+            async with _infer_semaphore:
+                results = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        _infer_executor,
+                        lambda c=chunk: _do_transcribe(c, sr, lang_code, return_timestamps)
+                    ),
+                    timeout=REQUEST_TIMEOUT
+                )
+            if results and len(results) > 0:
+                all_texts.append(results[0].text)
+        except asyncio.TimeoutError:
+            return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
-    if results and len(results) > 0:
-        text = detect_and_fix_repetitions(results[0].text)
-        language_code = results[0].language
-        if return_timestamps and hasattr(results[0], 'timestamps') and results[0].timestamps:
-            return {"text": text, "language": language_code, "timestamps": results[0].timestamps}
-    else:
-        text = ""
-        language_code = language
+    text = detect_and_fix_repetitions(" ".join(all_texts))
+    language_code = lang_code or language
 
     return {"text": text, "language": language_code}
 
