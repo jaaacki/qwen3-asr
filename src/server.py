@@ -73,14 +73,13 @@ def preprocess_audio(audio: np.ndarray, sr: int) -> tuple[np.ndarray, int]:
     # Convert to float32
     audio = audio.astype(np.float32)
 
-    # Resample to 16kHz if needed
+    # Resample to 16kHz if needed (torchaudio is bundled with PyTorch)
     if sr != TARGET_SR:
-        try:
-            import librosa
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=TARGET_SR)
-            sr = TARGET_SR
-        except ImportError:
-            pass  # librosa not available, pass raw sample rate
+        import torchaudio
+        audio_tensor = torch.from_numpy(audio).unsqueeze(0)  # [1, T]
+        resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)
+        audio = resampler(audio_tensor).squeeze(0).numpy()
+        sr = TARGET_SR
 
     # Peak normalize to [-1, 1] — improves feature extraction on quiet audio
     peak = np.abs(audio).max()
