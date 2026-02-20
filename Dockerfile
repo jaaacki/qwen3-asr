@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir \
     accelerate \
     soundfile \
-    librosa \
+    torchaudio==2.5.1 \
     fastapi \
     uvicorn \
     python-multipart \
