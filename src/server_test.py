@@ -223,3 +223,13 @@
 #   # Connect via WS, send multiple audio chunks, verify transcription
 #   # Send {"action": "reset"} to clear cache between sessions
 # Expected: faster subsequent WS chunks, same transcription quality
+
+# ─── Issue #33: Dual-model strategy (0.6B partials, 1.7B finals) ────
+# Change: When DUAL_MODEL=true, loads 0.6B model for fast WS partials
+#         and configured model for final flush results.
+# Verify:
+#   Set DUAL_MODEL=true in docker-compose.yml environment
+#   docker compose up -d --build
+#   docker compose logs | grep -i "dual\|fast model"
+#   Expected: "Dual-model strategy enabled"
+# Without DUAL_MODEL=true: single model behavior (default)
