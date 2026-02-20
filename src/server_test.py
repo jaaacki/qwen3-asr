@@ -169,3 +169,13 @@
 # Change: WS transcription skips silent frames
 # Verify: docker compose logs | grep "Silero VAD loaded"
 # Test: send silent audio via WS — should get empty response without GPU inference
+
+# ─── Issue #27: Priority scheduling for WebSocket vs HTTP ───────────
+# Change: Replaced asyncio.Semaphore(1) with PriorityInferQueue.
+#         WS requests get priority=0 (higher), HTTP gets priority=1 (lower).
+#         Uses min-heap so WS jobs run first when multiple are queued.
+# Verify:
+#   docker compose up -d --build
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+#   # Start WS stream while HTTP is processing — WS should not be blocked
+# Expected: WS transcription completes even while HTTP request is in progress

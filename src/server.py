@@ -11,6 +11,8 @@ import re
 import asyncio
 import concurrent.futures
 import time
+import heapq
+import dataclasses
 import numpy as np
 from qwen_asr import Qwen3ASRModel, parse_asr_output
 from qwen_asr.inference.qwen3_asr import AutoProcessor
@@ -29,8 +31,70 @@ model = None
 processor = None
 loaded_model_id = None
 
-# Semaphore to serialize GPU inference — prevents OOM with concurrent requests
-_infer_semaphore = asyncio.Semaphore(1)
+# Dedicated single-threaded executor for GPU inference
+_infer_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="qwen3-asr-infer",
+)
+
+
+@dataclasses.dataclass(order=True)
+class _InferJob:
+    priority: int          # lower = higher priority (0=WS, 1=HTTP)
+    submit_time: float     # tiebreaker
+    future: asyncio.Future = dataclasses.field(compare=False)
+    fn: object = dataclasses.field(compare=False)
+
+
+class PriorityInferQueue:
+    """Single-worker inference queue with priority scheduling.
+
+    WebSocket requests (priority=0) preempt HTTP file uploads (priority=1)
+    so real-time transcription is not blocked by slow batch uploads.
+    """
+
+    def __init__(self):
+        self._heap: list[_InferJob] = []
+        self._lock = asyncio.Lock()
+        self._has_work = asyncio.Event()
+        self._worker_task: asyncio.Task | None = None
+
+    def start(self):
+        self._worker_task = asyncio.create_task(self._worker())
+
+    def stop(self):
+        if self._worker_task:
+            self._worker_task.cancel()
+
+    async def _worker(self):
+        loop = asyncio.get_event_loop()
+        while True:
+            await self._has_work.wait()
+            async with self._lock:
+                if not self._heap:
+                    self._has_work.clear()
+                    continue
+                job = heapq.heappop(self._heap)
+                if not self._heap:
+                    self._has_work.clear()
+            try:
+                result = await loop.run_in_executor(_infer_executor, job.fn)
+                job.future.set_result(result)
+            except Exception as e:
+                job.future.set_exception(e)
+
+    async def submit(self, fn, priority: int = 1):
+        """Submit an inference job. Returns the result when complete."""
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        job = _InferJob(priority=priority, submit_time=time.time(), future=future, fn=fn)
+        async with self._lock:
+            heapq.heappush(self._heap, job)
+            self._has_work.set()
+        return await future
+
+
+_infer_queue = PriorityInferQueue()
 
 # Lock to prevent concurrent load/unload
 _model_lock = asyncio.Lock()
@@ -370,6 +434,7 @@ async def _idle_watchdog():
 @asynccontextmanager
 async def lifespan(the_app):
     """ASGI lifespan handler — compatible with both uvicorn and granian."""
+    _infer_queue.start()
     asyncio.create_task(_idle_watchdog())
     yield
     _infer_executor.shutdown(wait=False)
@@ -419,14 +484,13 @@ async def transcribe(
     all_texts = []
     for chunk in audio_chunks:
         try:
-            async with _infer_semaphore:
-                results = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
-                        _infer_executor,
-                        lambda c=chunk: _do_transcribe(c, sr, lang_code, return_timestamps)
-                    ),
-                    timeout=REQUEST_TIMEOUT
-                )
+            results = await asyncio.wait_for(
+                _infer_queue.submit(
+                    lambda c=chunk: _do_transcribe(c, sr, lang_code, return_timestamps),
+                    priority=1,  # HTTP = lower priority
+                ),
+                timeout=REQUEST_TIMEOUT,
+            )
             if results and len(results) > 0:
                 all_texts.append(results[0].text)
         except asyncio.TimeoutError:
@@ -497,11 +561,10 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
 
         if len(audio) <= CHUNK_SAMPLES:
             # Short audio: single batch
-            async with _infer_semaphore:
-                results = await asyncio.get_event_loop().run_in_executor(
-                    _infer_executor,
-                    lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
-                )
+            results = await _infer_queue.submit(
+                lambda: _do_transcribe(audio, sr, lang_code, return_timestamps),
+                priority=1,  # SSE = same as HTTP
+            )
             if results and len(results) > 0:
                 text = detect_and_fix_repetitions(results[0].text)
                 data = {"text": text, "language": results[0].language, "is_final": True}
@@ -519,11 +582,10 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
                 chunk = audio[start:end]
                 is_last = (end >= len(audio))
 
-                async with _infer_semaphore:
-                    results = await asyncio.get_event_loop().run_in_executor(
-                        _infer_executor,
-                        lambda c=chunk: _do_transcribe(c, sr, lang_code, return_timestamps)
-                    )
+                results = await _infer_queue.submit(
+                    lambda c=chunk: _do_transcribe(c, sr, lang_code, return_timestamps),
+                    priority=1,  # SSE = same as HTTP
+                )
 
                 if results and len(results) > 0:
                     text = detect_and_fix_repetitions(results[0].text)
@@ -763,15 +825,14 @@ async def _transcribe_with_context(
         if not is_speech(audio):
             return ""
 
-        # Run inference
-        async with _infer_semaphore:
-            results = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    _infer_executor,
-                    lambda: _do_transcribe(audio, sr, lang_code, False)
-                ),
-                timeout=REQUEST_TIMEOUT,
-            )
+        # Run inference via priority queue (WS = priority 0)
+        results = await asyncio.wait_for(
+            _infer_queue.submit(
+                lambda: _do_transcribe(audio, sr, lang_code, False),
+                priority=0,  # WebSocket = higher priority
+            ),
+            timeout=REQUEST_TIMEOUT,
+        )
 
         if results and len(results) > 0:
             return detect_and_fix_repetitions(results[0].text)
