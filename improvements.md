@@ -20,6 +20,26 @@ Here is a summary of the issues and the recommended architectural improvements:
 | **Limit Docker CPU Threads** | System Stability | Reduces CPU contention and speeds up GPU data feeding. |
 | **Gateway + Worker Architecture** | System / Memory | Reclaims ~1.9GB of idle system RAM; drops idle footprint to ~30MB. |
 | **Resolve "Fake" SSE Streaming** | Latency / UX | True Time-To-First-Token (TTFT) through incremental text yields. |
+| **Stop Per-Request `gc.collect` + `empty_cache`** | Extreme Latency | Recovers 5–15ms per chunk — 7–19% of latency budget burned on cleanup. |
+| **Eliminate Redundant WS Preprocessing** | Extreme Latency | Removes duplicate float32 conversion, unnecessary mono/resample checks on WS path. |
+| **Eliminate `bytes()` Copy in WS Path** | Extreme Latency | Removes unnecessary bytearray → bytes copy via buffer protocol. |
+| **Enable `cudnn.benchmark`** | Extreme Latency | 5–20% speedup on convolutional encoder layers via algorithm auto-tuning. |
+| **Warmup with Real Audio** | Extreme Latency | Avoids 100–500ms JIT compilation spike on first real request. |
+| **Disable WS `per-message-deflate`** | Extreme Latency | Saves 0.5–2ms/message CPU overhead; PCM binary doesn't compress. |
+| **Pre-Allocated Pinned Memory** | Extreme Latency | 1–3ms per chunk via page-locked DMA transfers + async GPU copy. |
+| **Dedicated Inference Thread** | Latency / Reliability | Eliminates thread pool thrashing; 10–30% lower p99 latency under load. |
+| **CUDA Stream Pipelining** | Extreme Latency | Hides PCIe transfer latency by overlapping transfer + compute. |
+| **INT8 W8A8 Quantization** | Extreme Speed | ~1.5–2x throughput, ~50% memory reduction via INT8 Tensor Cores. |
+| **FP8 Quantization (Hopper/Ada)** | Extreme Speed | Up to 1.6x throughput, 2x memory reduction on H100/RTX 4090. |
+| **CUDA Graphs for Decoder** | Extreme Speed | 20–40% decoder speedup by capturing decode loop as single GPU dispatch. |
+| **ONNX Runtime Encoder** | Extreme Speed | 20–40% encoder speedup via graph-level operator fusion. |
+| **KV-Cache Reuse Across Chunks** | Extreme Latency | ~15–25% less encoder compute by caching overlap hidden states. |
+| **Dual-Model 0.6B/1.7B Strategy** | Quality + Speed | 0.6B speed for real-time partials, 1.7B accuracy for finals. |
+| **TensorRT Encoder** | Extreme Speed | 2–4x encoder speedup via hardware-specific kernel auto-tuning. |
+| **Speculative Decoding (SpecASR)** | Extreme Speed | 3–4x faster decoding via draft-and-verify parallel generation. |
+| **Cache-Aware Streaming Encoder** | Extreme Concurrency | 3x concurrent stream capacity via causal encoder with cached activations. |
+| **NUMA-Aware CPU Pinning** | System | 5–15% CPU-side latency reduction on multi-socket servers. |
+| **Granian ASGI Server** | System | ~10% higher throughput, lower tail latency vs Uvicorn. |
 
 ## 1. STT Quality Improvements
 
