@@ -107,3 +107,9 @@
 # Verify: noisy audio that previously caused loops ("thank you thank you thank you...")
 #   should now return clean output
 # curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@noisy_audio.wav"
+
+# ─── Issue #7: Qwen3-ASR-1.7B default ────────────────────────────────
+# Change: default MODEL_ID changed to Qwen/Qwen3-ASR-1.7B
+# Verify: docker compose up -d --build
+#   curl http://localhost:8100/health  →  "model_id": "Qwen/Qwen3-ASR-1.7B"
+# Override: set MODEL_ID=Qwen/Qwen3-ASR-0.6B in compose.yaml environment
