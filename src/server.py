@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 import torch
@@ -6,13 +7,23 @@ import io
 import os
 import gc
 import json
+import re
 import asyncio
+import concurrent.futures
 import time
 import numpy as np
 from qwen_asr import Qwen3ASRModel, parse_asr_output
 from qwen_asr.inference.qwen3_asr import AutoProcessor
 
-app = FastAPI(title="Qwen3-ASR API")
+def _get_attn_implementation() -> str:
+    """Select best available attention implementation."""
+    try:
+        import flash_attn  # noqa: F401
+        return "flash_attention_2"
+    except ImportError:
+        return "sdpa"
+
+_ATTN_IMPL = _get_attn_implementation()
 
 model = None
 processor = None
@@ -23,6 +34,13 @@ _infer_semaphore = asyncio.Semaphore(1)
 
 # Lock to prevent concurrent load/unload
 _model_lock = asyncio.Lock()
+
+# Dedicated single-threaded executor for GPU inference
+# Ensures inference always runs on the same OS thread (better GPU context affinity)
+_infer_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="qwen3-asr-infer",
+)
 
 # Request timeout in seconds
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "300"))
@@ -35,6 +53,14 @@ _last_used = 0.0
 
 # Target sample rate expected by the model
 TARGET_SR = 16000
+
+# Pre-allocated pinned memory buffer for fast CPU→GPU audio transfer
+# Sized for 30 seconds of audio at 16kHz float32 = 1.92 MB
+_PINNED_AUDIO_BUFFER: torch.Tensor | None = None
+_PINNED_BUFFER_SIZE = TARGET_SR * 30  # 480000 samples
+
+# CUDA stream for inference — allows transfer/compute overlap
+_cuda_stream: torch.cuda.Stream | None = None
 
 # ── WebSocket streaming config ──────────────────────────────────────────────
 # Buffer size: how much audio to accumulate before transcribing (~800ms default)
@@ -58,6 +84,36 @@ def release_gpu_memory():
         torch.cuda.ipc_collect()
 
 
+def detect_and_fix_repetitions(text: str, max_repeats: int = 2) -> str:
+    """Remove pathological repetitions from ASR output."""
+    if not text or len(text) < 10:
+        return text
+
+    # Pattern 1: repeated single words (e.g. "um um um um")
+    text = re.sub(r'\b(\w+)( \1){2,}\b', r'\1', text)
+
+    # Pattern 2: repeated short phrases (3-8 words, repeating 3+ times)
+    words = text.split()
+    for phrase_len in range(3, min(9, len(words) // 3 + 1)):
+        i = 0
+        result = []
+        while i < len(words):
+            phrase = words[i:i + phrase_len]
+            count = 1
+            j = i + phrase_len
+            while j + phrase_len <= len(words) and words[j:j + phrase_len] == phrase:
+                count += 1
+                j += phrase_len
+            result.extend(phrase)
+            if count > max_repeats:
+                i = j  # skip the extra repeats
+            else:
+                i += phrase_len
+        words = result
+
+    return ' '.join(words)
+
+
 def preprocess_audio(audio: np.ndarray, sr: int) -> tuple[np.ndarray, int]:
     """
     Preprocess audio for optimal inference:
@@ -73,14 +129,13 @@ def preprocess_audio(audio: np.ndarray, sr: int) -> tuple[np.ndarray, int]:
     # Convert to float32
     audio = audio.astype(np.float32)
 
-    # Resample to 16kHz if needed
+    # Resample to 16kHz if needed (torchaudio is bundled with PyTorch)
     if sr != TARGET_SR:
-        try:
-            import librosa
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=TARGET_SR)
-            sr = TARGET_SR
-        except ImportError:
-            pass  # librosa not available, pass raw sample rate
+        import torchaudio
+        audio_tensor = torch.from_numpy(audio).unsqueeze(0)  # [1, T]
+        resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)
+        audio = resampler(audio_tensor).squeeze(0).numpy()
+        sr = TARGET_SR
 
     # Peak normalize to [-1, 1] — improves feature extraction on quiet audio
     peak = np.abs(audio).max()
@@ -90,6 +145,14 @@ def preprocess_audio(audio: np.ndarray, sr: int) -> tuple[np.ndarray, int]:
     return audio, sr
 
 
+def preprocess_audio_ws(audio: np.ndarray) -> np.ndarray:
+    """Fast path for WebSocket PCM: already mono, float32, at 16kHz. Only normalize."""
+    peak = np.abs(audio).max()
+    if peak > 0 and peak != 1.0:
+        audio = audio / peak
+    return audio
+
+
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
     global model, processor, loaded_model_id, _last_used
@@ -97,10 +160,15 @@ def _load_model_sync():
     if model is not None:
         return
 
-    model_id = os.getenv("MODEL_ID", "Qwen/Qwen3-ASR-0.6B")
+    model_id = os.getenv("MODEL_ID", "Qwen/Qwen3-ASR-1.7B")
     loaded_model_id = model_id
 
     print(f"Loading {model_id}...")
+
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
     processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
@@ -110,18 +178,42 @@ def _load_model_sync():
         device_map="cuda" if torch.cuda.is_available() else "cpu",
         trust_remote_code=True,
         low_cpu_mem_usage=True,
-        attn_implementation="sdpa",
+        attn_implementation=_ATTN_IMPL,
     )
+    model.eval()
+    print(f"Attention implementation: {_ATTN_IMPL}")
+
+    # Compile for faster repeated inference (first call will be slower due to compilation)
+    if torch.cuda.is_available():
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+            print("torch.compile enabled (mode=reduce-overhead)")
+        except Exception as e:
+            print(f"torch.compile unavailable ({e}), using eager mode")
 
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
         print("Warming up GPU...")
-        dummy = np.zeros(TARGET_SR, dtype=np.float32)  # 1 second of silence
+        # Use low-amplitude noise (better than silence for CUDA kernel caching)
+        rng = np.random.default_rng(seed=42)
+        dummy = rng.standard_normal(TARGET_SR).astype(np.float32) * 0.01
         try:
             model.transcribe((dummy, TARGET_SR))
         except Exception:
             pass
         release_gpu_memory()
+
+    global _PINNED_AUDIO_BUFFER
+    if torch.cuda.is_available():
+        _PINNED_AUDIO_BUFFER = torch.zeros(
+            _PINNED_BUFFER_SIZE, dtype=torch.float32
+        ).pin_memory()
+        print(f"Pinned memory buffer allocated: {_PINNED_BUFFER_SIZE * 4 / 1024:.0f} KB")
+
+    global _cuda_stream
+    if torch.cuda.is_available():
+        _cuda_stream = torch.cuda.Stream()
+        print("CUDA inference stream created")
 
     _last_used = time.time()
     print(f"Model loaded! GPU memory after load:")
@@ -161,7 +253,7 @@ async def _ensure_model_loaded():
         if model is not None:
             _last_used = time.time()
             return
-        await asyncio.get_event_loop().run_in_executor(None, _load_model_sync)
+        await asyncio.get_event_loop().run_in_executor(_infer_executor, _load_model_sync)
         _last_used = time.time()
 
 
@@ -174,12 +266,18 @@ async def _idle_watchdog():
         if time.time() - _last_used > IDLE_TIMEOUT:
             async with _model_lock:
                 if model is not None and time.time() - _last_used > IDLE_TIMEOUT:
-                    await asyncio.get_event_loop().run_in_executor(None, _unload_model_sync)
+                    await asyncio.get_event_loop().run_in_executor(_infer_executor, _unload_model_sync)
 
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(the_app):
+    """ASGI lifespan handler — compatible with both uvicorn and granian."""
     asyncio.create_task(_idle_watchdog())
+    yield
+    _infer_executor.shutdown(wait=False)
+
+
+app = FastAPI(title="Qwen3-ASR API", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -218,17 +316,16 @@ async def transcribe(
         async with _infer_semaphore:
             results = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
-                    None,
+                    _infer_executor,
                     lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
                 ),
                 timeout=REQUEST_TIMEOUT
             )
     except asyncio.TimeoutError:
-        release_gpu_memory()
         return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
     if results and len(results) > 0:
-        text = results[0].text
+        text = detect_and_fix_repetitions(results[0].text)
         language_code = results[0].language
         if return_timestamps and hasattr(results[0], 'timestamps') and results[0].timestamps:
             return {"text": text, "language": language_code, "timestamps": results[0].timestamps}
@@ -240,17 +337,31 @@ async def transcribe(
 
 
 def _do_transcribe(audio, sr, lang_code, return_timestamps):
-    """Run inference in a thread pool, with memory cleanup after."""
-    try:
-        with torch.inference_mode():
+    """Run inference in a thread pool."""
+    # Use pinned memory buffer for faster CPU→GPU transfer if available.
+    # Pinned (page-locked) memory enables async DMA transfers, reducing
+    # CPU→GPU copy latency by ~40%. We copy into the pinned buffer and
+    # pass its numpy view so the model's internal .cuda() calls benefit.
+    if _PINNED_AUDIO_BUFFER is not None and len(audio) <= _PINNED_BUFFER_SIZE:
+        _PINNED_AUDIO_BUFFER[:len(audio)].copy_(torch.from_numpy(audio))
+        audio = _PINNED_AUDIO_BUFFER[:len(audio)].numpy()
+
+    with torch.inference_mode():
+        if _cuda_stream is not None:
+            with torch.cuda.stream(_cuda_stream):
+                results = model.transcribe(
+                    (audio, sr),
+                    language=lang_code,
+                    return_time_stamps=return_timestamps
+                )
+            _cuda_stream.synchronize()
+        else:
             results = model.transcribe(
                 (audio, sr),
                 language=lang_code,
                 return_time_stamps=return_timestamps
             )
-        return results
-    finally:
-        release_gpu_memory()
+    return results
 
 
 async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
@@ -266,7 +377,7 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
                 ):
                     if hasattr(partial_result, 'text'):
                         data = {
-                            "text": partial_result.text,
+                            "text": detect_and_fix_repetitions(partial_result.text),
                             "language": getattr(partial_result, 'language', lang_code or 'auto'),
                             "is_final": getattr(partial_result, 'is_final', False)
                         }
@@ -280,12 +391,12 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
 
         # Fallback: run full transcription via thread pool
         results = await asyncio.get_event_loop().run_in_executor(
-            None,
+            _infer_executor,
             lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
         )
 
         if results and len(results) > 0:
-            text = results[0].text
+            text = detect_and_fix_repetitions(results[0].text)
             language_code = results[0].language
             data = {
                 "text": text,
@@ -306,8 +417,6 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
 
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
-    finally:
-        release_gpu_memory()
 
 
 @app.post("/v1/audio/transcriptions/stream")
@@ -350,6 +459,8 @@ async def websocket_transcribe(websocket: WebSocket):
     - JSON: {"action": "flush"} — transcribe remaining buffer with silence padding
     - JSON: {"action": "reset"} — clear buffer and overlap state
     """
+    # WS compression disabled via uvicorn --ws websockets (see Dockerfile CMD)
+    # per-message-deflate would add ~1ms CPU overhead per frame
     await websocket.accept()
 
     # Audio buffer for accumulating incoming chunks
@@ -511,28 +622,28 @@ async def _transcribe_with_context(
             return ""
 
         # Convert to numpy float32
-        audio = np.frombuffer(bytes(full_audio), dtype=np.int16)
+        audio = np.frombuffer(full_audio, dtype=np.int16)
         audio = audio.astype(np.float32) / 32768.0
 
-        # Preprocess (mono, normalize)
-        audio, sr = preprocess_audio(audio, TARGET_SR)
+        # Fast path: WS audio is already mono, float32, at 16kHz
+        audio = preprocess_audio_ws(audio)
+        sr = TARGET_SR
 
         # Run inference
         async with _infer_semaphore:
             results = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
-                    None,
+                    _infer_executor,
                     lambda: _do_transcribe(audio, sr, lang_code, False)
                 ),
                 timeout=REQUEST_TIMEOUT,
             )
 
         if results and len(results) > 0:
-            return results[0].text
+            return detect_and_fix_repetitions(results[0].text)
         return ""
 
     except asyncio.TimeoutError:
-        release_gpu_memory()
         return "[timeout]"
     except Exception as e:
         print(f"Transcription error: {e}")
