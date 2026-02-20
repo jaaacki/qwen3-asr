@@ -2,6 +2,8 @@ FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 WORKDIR /app
 
+# CUDA toolkit path — required for flash-attn to locate nvcc in devel image
+ENV CUDA_HOME=/usr/local/cuda
 # CUDA memory allocator tuning — reduce fragmentation for shared GPU
 ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 # Disable tokenizer parallelism warnings in forked workers
