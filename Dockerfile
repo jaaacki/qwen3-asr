@@ -6,6 +6,9 @@ WORKDIR /app
 ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 # Disable tokenizer parallelism warnings in forked workers
 ENV TOKENIZERS_PARALLELISM=false
+# Prevent OpenMP/MKL from spawning CPU threads that compete with GPU inference
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

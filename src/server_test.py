@@ -36,3 +36,14 @@
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 #   # Compare transcription quality — should be identical or near-identical
 # Expected: Faster inference with no meaningful accuracy degradation.
+
+# ─── Issue #13: OMP/MKL thread env vars ─────────────────────────────────────
+# Change: Added OMP_NUM_THREADS=1 and MKL_NUM_THREADS=1 to Dockerfile ENV.
+#         Prevents OpenMP/MKL from spawning CPU threads that compete with
+#         GPU inference, reducing context-switch overhead.
+# Verify:
+#   docker compose up -d --build
+#   docker exec <container> env | grep -E "OMP|MKL"
+#   # Expected: OMP_NUM_THREADS=1 and MKL_NUM_THREADS=1
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: Transcription works normally. No CPU thread contention during GPU inference.
