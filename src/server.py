@@ -337,6 +337,23 @@ def is_speech(audio_float32: np.ndarray, threshold: float = 0.5) -> bool:
         return True  # safe fallback
 
 
+# TensorRT encoder (opt-in via TRT_ENCODER_PATH env var)
+_trt_encoder = None
+
+
+def _try_load_trt_encoder():
+    """Load pre-built TensorRT encoder if available."""
+    global _trt_encoder
+    trt_path = os.getenv("TRT_ENCODER_PATH", "")
+    if not trt_path or not os.path.exists(trt_path):
+        return
+    try:
+        _trt_encoder = torch.jit.load(trt_path)
+        print(f"TensorRT encoder loaded from {trt_path}")
+    except Exception as e:
+        print(f"TRT encoder load failed: {e}")
+
+
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
     global model, processor, loaded_model_id, _last_used
@@ -435,6 +452,8 @@ def _load_model_sync():
     _try_build_cuda_graph()
 
     _try_load_onnx_encoder()
+
+    _try_load_trt_encoder()
 
     if os.getenv("DUAL_MODEL", "").lower() == "true" and torch.cuda.is_available():
         try:
@@ -650,8 +669,30 @@ def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
         )
 
     with torch.inference_mode():
+        # Route through TRT encoder if loaded (opt-in via TRT_ENCODER_PATH).
+        if _trt_encoder is not None and hasattr(m, 'encoder'):
+            _orig_fwd = m.encoder.forward
+            try:
+                def _trt_encoder_fwd(*args, **kwargs):
+                    inp = args[0] if args else kwargs.get('input_features')
+                    if inp is None:
+                        return _orig_fwd(*args, **kwargs)
+                    try:
+                        out = _trt_encoder(inp)
+                        return (out,)
+                    except Exception:
+                        return _orig_fwd(*args, **kwargs)
+                m.encoder.forward = _trt_encoder_fwd
+                if _cuda_stream is not None:
+                    with torch.cuda.stream(_cuda_stream):
+                        results = _run_transcribe()
+                    _cuda_stream.synchronize()
+                else:
+                    results = _run_transcribe()
+            finally:
+                m.encoder.forward = _orig_fwd
         # Route through ONNX encoder if loaded (opt-in via ONNX_ENCODER_PATH).
-        if _onnx_session is not None and hasattr(m, 'encoder'):
+        elif _onnx_session is not None and hasattr(m, 'encoder'):
             _orig_fwd = m.encoder.forward
             try:
                 def _onnx_fwd(*args, **kwargs):

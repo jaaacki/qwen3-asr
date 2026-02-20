@@ -304,3 +304,35 @@ def test_vllm_loader_exists():
 def test_vllm_infer_exists():
     from server import _do_transcribe_vllm
     assert callable(_do_transcribe_vllm)
+
+# ─── Issue #37: TensorRT encoder conversion ──────────────────────────
+# Change: TRT_ENCODER_PATH enables TensorRT-optimized encoder inference.
+#         New script src/build_trt.py builds the TRT engine.
+# Verify:
+#   python src/build_trt.py --output models/encoder.trt
+#   TRT_ENCODER_PATH=models/encoder.trt docker compose up -d --build
+#   docker compose logs | grep "TensorRT"
+# Expected: "TensorRT encoder loaded from models/encoder.trt"
+
+
+def test_trt_loader_exists():
+    """Verify TRT encoder loader function exists."""
+    from server import _try_load_trt_encoder
+    assert callable(_try_load_trt_encoder)
+
+def test_trt_encoder_global():
+    """Verify _trt_encoder global is defined."""
+    from server import _trt_encoder
+    assert _trt_encoder is None
+
+def test_build_trt_importable():
+    """Verify build_trt module is importable."""
+    import build_trt
+    assert callable(build_trt.build_trt_engine)
+
+def test_do_transcribe_has_trt_path():
+    """Verify _do_transcribe references _trt_encoder for integration."""
+    import inspect
+    from server import _do_transcribe
+    source = inspect.getsource(_do_transcribe)
+    assert "_trt_encoder" in source

@@ -37,9 +37,13 @@ RUN pip install --no-cache-dir torchao
 # Flash Attention 2 (built from source for CUDA 12.4 compatibility)
 RUN pip install --no-cache-dir flash-attn --no-build-isolation
 
+# Optional: install torch-tensorrt for TRT encoder support
+# RUN pip install --no-cache-dir torch-tensorrt
+
 COPY src/server.py /app/server.py
 COPY src/gateway.py /app/gateway.py
 COPY src/worker.py /app/worker.py
+COPY src/build_trt.py /app/build_trt.py
 
 EXPOSE 8000
 
