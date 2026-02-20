@@ -332,8 +332,9 @@ def _load_model_sync():
 
     processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
-    model = Qwen3ASRModel.from_pretrained(
-        model_id,
+    quantize_mode = os.getenv("QUANTIZE", "").lower()
+
+    load_kwargs = dict(
         torch_dtype=torch.bfloat16,
         device_map="cuda" if torch.cuda.is_available() else "cpu",
         trust_remote_code=True,
@@ -350,6 +351,17 @@ def _load_model_sync():
             print("torch.compile enabled (mode=reduce-overhead)")
         except Exception as e:
             print(f"torch.compile unavailable ({e}), using eager mode")
+
+    if quantize_mode == "int8" and torch.cuda.is_available():
+        try:
+            from transformers import BitsAndBytesConfig
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            load_kwargs["torch_dtype"] = torch.float16  # required for bitsandbytes
+            print("INT8 quantization enabled (bitsandbytes)")
+        except ImportError:
+            print("bitsandbytes not available, using default precision")
+
+    model = Qwen3ASRModel.from_pretrained(model_id, **load_kwargs)
 
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
