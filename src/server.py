@@ -511,7 +511,7 @@ async def _transcribe_with_context(
             return ""
 
         # Convert to numpy float32
-        audio = np.frombuffer(bytes(full_audio), dtype=np.int16)
+        audio = np.frombuffer(full_audio, dtype=np.int16)
         audio = audio.astype(np.float32) / 32768.0
 
         # Preprocess (mono, normalize)
