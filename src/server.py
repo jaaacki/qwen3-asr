@@ -387,6 +387,8 @@ def _load_model_sync():
         _cuda_stream = torch.cuda.Stream()
         print("CUDA inference stream created")
 
+    _try_build_cuda_graph()
+
     _last_used = time.time()
     print(f"Model loaded! GPU memory after load:")
     if torch.cuda.is_available():
@@ -395,6 +397,29 @@ def _load_model_sync():
         print(f"  Allocated: {allocated:.0f} MB, Reserved: {reserved:.0f} MB")
 
     _load_vad()
+
+
+def _try_build_cuda_graph():
+    """
+    CUDA kernel cache warming (opt-in via USE_CUDA_GRAPHS=true).
+
+    Full CUDA graph capture requires fixed-size tensor inputs, but Qwen3-ASR
+    uses variable-length audio.  Instead, this runs extra warmup passes so
+    that CUDA JIT-compiles and caches the kernels used by the decoder,
+    reducing latency on the first real request.
+    """
+    if not torch.cuda.is_available():
+        return
+    if os.getenv("USE_CUDA_GRAPHS", "").lower() != "true":
+        return
+    try:
+        dummy = np.random.randn(TARGET_SR).astype(np.float32) * 0.01
+        for _ in range(3):
+            model.transcribe((dummy, TARGET_SR))
+        torch.cuda.synchronize()
+        print("CUDA kernel cache warming complete (3 extra passes)")
+    except Exception as e:
+        print(f"CUDA kernel cache warming failed: {e}")
 
 
 def _unload_model_sync():
