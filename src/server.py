@@ -230,7 +230,6 @@ async def transcribe(
                 timeout=REQUEST_TIMEOUT
             )
     except asyncio.TimeoutError:
-        release_gpu_memory()
         return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
     if results and len(results) > 0:
@@ -246,17 +245,14 @@ async def transcribe(
 
 
 def _do_transcribe(audio, sr, lang_code, return_timestamps):
-    """Run inference in a thread pool, with memory cleanup after."""
-    try:
-        with torch.inference_mode():
-            results = model.transcribe(
-                (audio, sr),
-                language=lang_code,
-                return_time_stamps=return_timestamps
-            )
-        return results
-    finally:
-        release_gpu_memory()
+    """Run inference in a thread pool."""
+    with torch.inference_mode():
+        results = model.transcribe(
+            (audio, sr),
+            language=lang_code,
+            return_time_stamps=return_timestamps
+        )
+    return results
 
 
 async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
@@ -312,8 +308,6 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
 
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
-    finally:
-        release_gpu_memory()
 
 
 @app.post("/v1/audio/transcriptions/stream")
@@ -538,7 +532,6 @@ async def _transcribe_with_context(
         return ""
 
     except asyncio.TimeoutError:
-        release_gpu_memory()
         return "[timeout]"
     except Exception as e:
         print(f"Transcription error: {e}")

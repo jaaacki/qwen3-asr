@@ -47,3 +47,15 @@
 #   # Expected: OMP_NUM_THREADS=1 and MKL_NUM_THREADS=1
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 # Expected: Transcription works normally. No CPU thread contention during GPU inference.
+
+# ─── Issue #14: Remove per-request release_gpu_memory() ───────────────────
+# Change: Removed release_gpu_memory() calls from _do_transcribe() finally block,
+#         transcribe() timeout handler, sse_transcribe_generator() finally block,
+#         and _transcribe_with_context() timeout handler.
+#         Kept release_gpu_memory() only in _unload_model_sync() and warmup.
+# Verify:
+#   docker compose up -d --build
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+#   # Run multiple requests in succession to confirm no memory leak
+#   curl http://localhost:8100/health  # check GPU memory stays stable
+# Expected: faster inference (5-10ms saved per request), same transcription quality
