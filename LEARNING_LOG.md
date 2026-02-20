@@ -1,0 +1,52 @@
+# Learning Log
+
+Running narrative of decisions, patterns, and lessons.
+
+---
+
+## 2026-02-20 — Why this design: Three-phase optimization roadmap
+
+**Type**: Why this design
+**Related**: Phase 1-3 planning
+
+### Context
+The qwen3-asr server needed a structured approach to real-time optimization. After a deep analysis of the WebSocket critical path (documented in improvements.md), we identified that the current ~150ms per-chunk latency has multiple independent sources of waste — from Python garbage collection after every inference (5-15ms) to redundant memory copies and missing hardware-level optimizations.
+
+### Decision
+Organized improvements into three phases by effort/risk/impact:
+- **Phase 1 (Quick Wins)**: Zero-risk changes that recover wasted latency — removing per-request gc.collect(), fixing redundant copies, enabling hardware features (TF32, cudnn.benchmark, Flash Attention). Target: sub-100ms.
+- **Phase 2 (Deep Optimization)**: Medium-effort changes requiring new dependencies or architecture adjustments — VAD, quantization, CUDA Graphs, ONNX Runtime. Target: sub-50ms.
+- **Phase 3 (Architecture)**: High-effort changes that fundamentally reshape the system — TensorRT, speculative decoding, Gateway+Worker, vLLM. Target: sub-25ms.
+
+### Why this ordering
+Phase 1 items are ordered so that the easiest, lowest-risk changes land first and immediately improve the baseline. model.eval() and removing gc.collect() are pure corrections that should never have been missing. TF32 and cudnn.benchmark are one-line hardware unlocks. torch.compile and Flash Attention 2 require more validation but are well-understood.
+
+Phase 2 builds on the clean baseline from Phase 1 — quantization and CUDA Graphs require a stable inference path to profile against. VAD is placed before buffer reduction because it changes the effective workload.
+
+Phase 3 is deliberately last because these changes are partially mutually exclusive (vLLM replaces much of the manual optimization from Phase 1-2) and require the most validation.
+
+### What could go wrong
+- torch.compile may not be compatible with the Qwen3-ASR model's generate() method (dynamic control flow)
+- Flash Attention 2 installation in Docker may conflict with the CUDA 12.4 base image
+- INT8 quantization may degrade accuracy on edge cases (accented speech, code-switching)
+- The dual-model strategy (Phase 2) may not fit in VRAM alongside INT8 — needs careful memory planning
+
+---
+
+## 2026-02-20 — What just happened: Critical path analysis of WebSocket hot path
+
+**Type**: What just happened
+**Related**: improvements.md Section 4
+
+### Pattern
+Traced every step of a WebSocket audio chunk from recv to response. Discovered that non-inference overhead accounts for ~15-25% of total latency:
+- release_gpu_memory() per request: 5-15ms (the worst offender)
+- Thread pool dispatch: ~0.3ms
+- Redundant preprocessing: ~0.15ms
+- Unnecessary bytes() copy: ~0.05ms
+
+### Aha moment
+The gc.collect() + torch.cuda.empty_cache() pattern — commonly seen in tutorials and Stack Overflow answers — is actively harmful for real-time workloads. It's appropriate for notebook-style single-shot inference but defeats PyTorch's caching allocator in a server context. The allocator caches freed blocks specifically to avoid cudaMalloc/cudaFree overhead on the next request. empty_cache() throws away that cache.
+
+### What could go wrong
+Without periodic empty_cache(), PyTorch's reserved-but-unused memory will show as "allocated" in nvidia-smi even though it's available to PyTorch. This may look like a memory leak but isn't. Only matters if another process on the same GPU needs VRAM — in which case the idle unload watchdog already handles this by unloading the entire model.

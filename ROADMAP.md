@@ -1,0 +1,58 @@
+# Roadmap
+
+## Phase 1 — Foundation & Quick Wins → v0.4.0
+_The system achieves sub-100ms inference with proper model configuration and zero-waste hot path._
+
+Issues ordered by dependency:
+- [ ] #18 Ensure model.eval() is called after loading
+- [ ] #14 Remove per-request release_gpu_memory() calls
+- [ ] #16 Eliminate unnecessary bytes() copy in WS transcription
+- [ ] #15 Optimize WebSocket audio preprocessing path
+- [ ] #17 Enable cudnn.benchmark for conv layer auto-tuning
+- [ ] #19 Warmup with representative audio instead of silence
+- [ ] #20 Disable WebSocket per-message-deflate compression
+- [ ] #13 Add OMP_NUM_THREADS and MKL_NUM_THREADS to Dockerfile
+- [ ] #11 Enable TensorFloat-32 (TF32) matmul precision
+- [ ] #9 Enable torch.compile for inference speedup
+- [ ] #10 Switch to Flash Attention 2
+- [ ] #12 Replace librosa with torchaudio for audio resampling
+- [ ] #7 Upgrade to Qwen3-ASR-1.7B model
+- [ ] #8 Implement repetition detection and fixing
+- [ ] #22 Use dedicated inference ThreadPoolExecutor
+- [ ] #21 Pre-allocate pinned memory buffers for GPU transfer
+- [ ] #23 Implement CUDA stream pipelining for transfer/compute overlap
+
+## Phase 2 — Deep Optimization → v0.5.0
+_The system handles production workloads with sub-50ms inference, VAD-gated processing, and priority-based scheduling._
+
+Issues ordered by dependency:
+- [ ] #24 Add long audio chunking at silence boundaries
+- [ ] #25 Integrate Silero VAD for voice activity detection
+- [ ] #26 Reduce WebSocket buffer from 800ms to 400-500ms
+- [ ] #27 Fix WebSocket/HTTP semaphore contention with priority scheduling
+- [ ] #28 Implement real SSE streaming via chunked progressive transcription
+- [ ] #29 INT8 W8A8 quantization with SmoothQuant
+- [ ] #30 CUDA Graphs for decoder loop
+- [ ] #31 Export encoder to ONNX Runtime
+- [ ] #32 Implement KV-cache reuse across WebSocket chunks
+- [ ] #33 Dual-model strategy: 0.6B for partials, 1.7B for finals
+- [ ] #34 FP8 quantization for Hopper/Ada GPUs
+
+## Phase 3 — Architecture & Maximum Performance → v0.6.0
+_The system scales to concurrent streams with sub-25ms inference via hardware-optimized engines and architectural redesign._
+
+Issues ordered by dependency:
+- [ ] #35 Gateway + Worker architecture for idle RAM reclamation
+- [ ] #36 Adopt vLLM engine backend
+- [ ] #37 TensorRT conversion for encoder
+- [ ] #38 Speculative decoding for ASR (SpecASR)
+- [ ] #39 Cache-aware streaming encoder with causal attention
+- [ ] #40 NUMA-aware CPU pinning
+- [ ] #41 Evaluate Granian as ASGI server replacement
+
+## Backlog
+_Unplaced items or future considerations._
+- Retire whisper-engine container (Qwen3-ASR-1.7B matches/beats Whisper large-v3)
+- Triton Inference Server ensemble pipeline for 100+ concurrent streams
+- Decoder distillation (FastWhisper-style) — 5x faster with 1% WER loss
+- Head pruning + layer merging (BaldWhisper-style) — 48% smaller, 2x faster
