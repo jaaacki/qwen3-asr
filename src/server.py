@@ -112,6 +112,7 @@ def _load_model_sync():
         low_cpu_mem_usage=True,
         attn_implementation="sdpa",
     )
+    model.eval()
 
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
