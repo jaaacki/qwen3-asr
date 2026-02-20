@@ -96,6 +96,9 @@ class PriorityInferQueue:
 
 _infer_queue = PriorityInferQueue()
 
+# ONNX Runtime session for encoder (opt-in via ONNX_ENCODER_PATH)
+_onnx_session = None
+
 # Lock to prevent concurrent load/unload
 _model_lock = asyncio.Lock()
 
@@ -389,6 +392,8 @@ def _load_model_sync():
 
     _try_build_cuda_graph()
 
+    _try_load_onnx_encoder()
+
     _last_used = time.time()
     print(f"Model loaded! GPU memory after load:")
     if torch.cuda.is_available():
@@ -420,6 +425,23 @@ def _try_build_cuda_graph():
         print("CUDA kernel cache warming complete (3 extra passes)")
     except Exception as e:
         print(f"CUDA kernel cache warming failed: {e}")
+
+
+def _try_load_onnx_encoder():
+    """Load ONNX encoder if path is configured (opt-in)."""
+    global _onnx_session
+    onnx_path = os.getenv("ONNX_ENCODER_PATH", "")
+    if not onnx_path or not os.path.exists(onnx_path):
+        return
+    try:
+        import onnxruntime as ort
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        _onnx_session = ort.InferenceSession(onnx_path, opts, providers=providers)
+        print(f"ONNX encoder loaded from {onnx_path}")
+    except Exception as e:
+        print(f"ONNX encoder load failed: {e}")
 
 
 def _unload_model_sync():
