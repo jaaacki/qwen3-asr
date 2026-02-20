@@ -63,13 +63,13 @@ _PINNED_BUFFER_SIZE = TARGET_SR * 30  # 480000 samples
 _cuda_stream: torch.cuda.Stream | None = None
 
 # ── WebSocket streaming config ──────────────────────────────────────────────
-# Buffer size: how much audio to accumulate before transcribing (~800ms default)
-# At 16kHz 16-bit mono: 800ms = 25600 bytes
-WS_BUFFER_SIZE = int(os.getenv("WS_BUFFER_SIZE", str(int(TARGET_SR * 2 * 0.8))))
+# Buffer size: how much audio to accumulate before transcribing (~450ms default)
+# At 16kHz 16-bit mono: 450ms = 14400 bytes
+WS_BUFFER_SIZE = int(os.getenv("WS_BUFFER_SIZE", str(int(TARGET_SR * 2 * 0.45))))
 
-# Overlap: how much of the previous chunk to prepend to the next (~300ms default)
+# Overlap: how much of the previous chunk to prepend to the next (~150ms default)
 # Prevents words from being split at chunk boundaries
-WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.3))))
+WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.15))))
 
 # Silence padding appended before final transcription on flush (~600ms)
 # Gives the model trailing context to commit the last word
@@ -451,7 +451,7 @@ async def websocket_transcribe(websocket: WebSocket):
     WebSocket endpoint for real-time audio transcription.
 
     Accepts binary audio frames (PCM 16-bit, 16kHz mono).
-    Buffers audio and transcribes in ~800ms windows with 300ms overlap
+    Buffers audio and transcribes in ~450ms windows with 150ms overlap
     between consecutive chunks to prevent word splits at boundaries.
 
     Client can send:
