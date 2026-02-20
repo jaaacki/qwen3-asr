@@ -129,7 +129,9 @@ def _load_model_sync():
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
         print("Warming up GPU...")
-        dummy = np.zeros(TARGET_SR, dtype=np.float32)  # 1 second of silence
+        # Use low-amplitude noise (better than silence for CUDA kernel caching)
+        rng = np.random.default_rng(seed=42)
+        dummy = rng.standard_normal(TARGET_SR).astype(np.float32) * 0.01
         try:
             model.transcribe((dummy, TARGET_SR))
         except Exception:
