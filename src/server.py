@@ -168,6 +168,14 @@ def _load_model_sync():
     model.eval()
     print(f"Attention implementation: {_ATTN_IMPL}")
 
+    # Compile for faster repeated inference (first call will be slower due to compilation)
+    if torch.cuda.is_available():
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+            print("torch.compile enabled (mode=reduce-overhead)")
+        except Exception as e:
+            print(f"torch.compile unavailable ({e}), using eager mode")
+
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
         print("Warming up GPU...")
