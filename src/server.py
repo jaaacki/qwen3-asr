@@ -11,6 +11,8 @@ import re
 import asyncio
 import concurrent.futures
 import time
+import heapq
+import dataclasses
 import numpy as np
 from qwen_asr import Qwen3ASRModel, parse_asr_output
 from qwen_asr.inference.qwen3_asr import AutoProcessor
@@ -29,18 +31,80 @@ model = None
 processor = None
 loaded_model_id = None
 
-# Semaphore to serialize GPU inference — prevents OOM with concurrent requests
-_infer_semaphore = asyncio.Semaphore(1)
-
-# Lock to prevent concurrent load/unload
-_model_lock = asyncio.Lock()
-
 # Dedicated single-threaded executor for GPU inference
-# Ensures inference always runs on the same OS thread (better GPU context affinity)
 _infer_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="qwen3-asr-infer",
 )
+
+
+@dataclasses.dataclass(order=True)
+class _InferJob:
+    priority: int          # lower = higher priority (0=WS, 1=HTTP)
+    submit_time: float     # tiebreaker
+    future: asyncio.Future = dataclasses.field(compare=False)
+    fn: object = dataclasses.field(compare=False)
+
+
+class PriorityInferQueue:
+    """Single-worker inference queue with priority scheduling.
+
+    WebSocket requests (priority=0) preempt HTTP file uploads (priority=1)
+    so real-time transcription is not blocked by slow batch uploads.
+    """
+
+    def __init__(self):
+        self._heap: list[_InferJob] = []
+        self._lock = asyncio.Lock()
+        self._has_work = asyncio.Event()
+        self._worker_task: asyncio.Task | None = None
+
+    def start(self):
+        self._worker_task = asyncio.create_task(self._worker())
+
+    def stop(self):
+        if self._worker_task:
+            self._worker_task.cancel()
+
+    async def _worker(self):
+        loop = asyncio.get_event_loop()
+        while True:
+            await self._has_work.wait()
+            async with self._lock:
+                if not self._heap:
+                    self._has_work.clear()
+                    continue
+                job = heapq.heappop(self._heap)
+                if not self._heap:
+                    self._has_work.clear()
+            try:
+                result = await loop.run_in_executor(_infer_executor, job.fn)
+                job.future.set_result(result)
+            except Exception as e:
+                job.future.set_exception(e)
+
+    async def submit(self, fn, priority: int = 1):
+        """Submit an inference job. Returns the result when complete."""
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        job = _InferJob(priority=priority, submit_time=time.time(), future=future, fn=fn)
+        async with self._lock:
+            heapq.heappush(self._heap, job)
+            self._has_work.set()
+        return await future
+
+
+_infer_queue = PriorityInferQueue()
+
+# ONNX Runtime session for encoder (opt-in via ONNX_ENCODER_PATH)
+_onnx_session = None
+
+# Fast model for partial WS transcriptions (opt-in via DUAL_MODEL=true)
+_fast_model = None
+_fast_model_id = "Qwen/Qwen3-ASR-0.6B"
+
+# Lock to prevent concurrent load/unload
+_model_lock = asyncio.Lock()
 
 # Request timeout in seconds
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "300"))
@@ -63,13 +127,13 @@ _PINNED_BUFFER_SIZE = TARGET_SR * 30  # 480000 samples
 _cuda_stream: torch.cuda.Stream | None = None
 
 # ── WebSocket streaming config ──────────────────────────────────────────────
-# Buffer size: how much audio to accumulate before transcribing (~800ms default)
-# At 16kHz 16-bit mono: 800ms = 25600 bytes
-WS_BUFFER_SIZE = int(os.getenv("WS_BUFFER_SIZE", str(int(TARGET_SR * 2 * 0.8))))
+# Buffer size: how much audio to accumulate before transcribing (~450ms default)
+# At 16kHz 16-bit mono: 450ms = 14400 bytes
+WS_BUFFER_SIZE = int(os.getenv("WS_BUFFER_SIZE", str(int(TARGET_SR * 2 * 0.45))))
 
-# Overlap: how much of the previous chunk to prepend to the next (~300ms default)
+# Overlap: how much of the previous chunk to prepend to the next (~150ms default)
 # Prevents words from being split at chunk boundaries
-WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.3))))
+WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.15))))
 
 # Silence padding appended before final transcription on flush (~600ms)
 # Gives the model trailing context to commit the last word
@@ -153,6 +217,102 @@ def preprocess_audio_ws(audio: np.ndarray) -> np.ndarray:
     return audio
 
 
+def chunk_audio_at_silence(
+    audio: np.ndarray,
+    sr: int,
+    max_chunk_s: float = 25.0,
+    silence_thresh: float = 0.01,
+    min_silence_s: float = 0.3,
+) -> list[np.ndarray]:
+    """
+    Split long audio into chunks at silence boundaries.
+    Falls back to fixed-length chunks if no silence is found.
+
+    Args:
+        audio: float32 numpy array
+        sr: sample rate
+        max_chunk_s: maximum chunk length in seconds
+        silence_thresh: RMS below this threshold = silence
+        min_silence_s: minimum silence duration to split on
+
+    Returns:
+        List of audio chunks
+    """
+    max_chunk = int(max_chunk_s * sr)
+
+    if len(audio) <= max_chunk:
+        return [audio]
+
+    min_silence_samples = int(min_silence_s * sr)
+    frame_length = int(0.02 * sr)  # 20ms frames
+
+    # Compute RMS energy per frame
+    frames = np.array_split(audio, max(1, len(audio) // frame_length))
+    rms = np.array([np.sqrt(np.mean(f**2)) for f in frames])
+
+    # Find silence frames
+    silence_mask = rms < silence_thresh
+
+    # Find silence runs long enough to split on
+    chunks = []
+    last_split = 0
+
+    i = 0
+    while i < len(rms):
+        frame_start = i * frame_length
+
+        # Check if we're past max chunk size and in silence
+        if frame_start - last_split >= max_chunk and silence_mask[i]:
+            # Find end of this silence run
+            j = i
+            while j < len(rms) and silence_mask[j]:
+                j += 1
+            silence_end = min(j * frame_length, len(audio))
+            silence_mid = (frame_start + silence_end) // 2
+
+            if silence_mid - last_split >= min_silence_samples:
+                chunks.append(audio[last_split:silence_mid])
+                last_split = silence_mid
+                i = j
+                continue
+        i += 1
+
+    # Add remaining audio
+    if last_split < len(audio):
+        chunks.append(audio[last_split:])
+
+    return chunks if chunks else [audio]
+
+
+# Silero VAD — loaded lazily at model startup
+_vad_model = None
+
+
+def _load_vad():
+    """Load Silero VAD model (CPU, lightweight ~1MB)."""
+    global _vad_model
+    try:
+        from silero_vad import load_silero_vad
+        _vad_model = load_silero_vad()
+        _vad_model.eval()
+        print("Silero VAD loaded")
+    except ImportError:
+        print("silero-vad not installed, VAD disabled")
+
+
+def is_speech(audio_float32: np.ndarray, threshold: float = 0.5) -> bool:
+    """Return True if audio contains speech (Silero VAD)."""
+    if _vad_model is None:
+        return True  # fallback: assume speech if VAD not available
+    try:
+        tensor = torch.from_numpy(audio_float32).unsqueeze(0)
+        with torch.no_grad():
+            confidence = _vad_model(tensor, 16000).item()
+        return confidence >= threshold
+    except Exception:
+        return True  # safe fallback
+
+
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
     global model, processor, loaded_model_id, _last_used
@@ -172,8 +332,9 @@ def _load_model_sync():
 
     processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
-    model = Qwen3ASRModel.from_pretrained(
-        model_id,
+    quantize_mode = os.getenv("QUANTIZE", "").lower()
+
+    load_kwargs = dict(
         torch_dtype=torch.bfloat16,
         device_map="cuda" if torch.cuda.is_available() else "cpu",
         trust_remote_code=True,
@@ -183,6 +344,21 @@ def _load_model_sync():
     model.eval()
     print(f"Attention implementation: {_ATTN_IMPL}")
 
+    # FP8 post-training quantization (opt-in via QUANTIZE=fp8, requires sm_89+)
+    quantize_mode = os.getenv("QUANTIZE", "").lower()
+    if quantize_mode == "fp8" and torch.cuda.is_available():
+        compute_capability = torch.cuda.get_device_capability()
+        if compute_capability >= (8, 9):  # sm_89+ (Ada/Hopper)
+            try:
+                from torchao.quantization import quantize_, Float8DynamicActivationFloat8WeightConfig
+                quantize_(model, Float8DynamicActivationFloat8WeightConfig())
+                print("FP8 quantization applied (torchao)")
+            except Exception as e:
+                print(f"FP8 quantization failed: {e}")
+        else:
+            cc = f"sm_{compute_capability[0]}{compute_capability[1]}"
+            print(f"FP8 requires sm_89+, current GPU is {cc} -- skipping")
+
     # Compile for faster repeated inference (first call will be slower due to compilation)
     if torch.cuda.is_available():
         try:
@@ -190,6 +366,17 @@ def _load_model_sync():
             print("torch.compile enabled (mode=reduce-overhead)")
         except Exception as e:
             print(f"torch.compile unavailable ({e}), using eager mode")
+
+    if quantize_mode == "int8" and torch.cuda.is_available():
+        try:
+            from transformers import BitsAndBytesConfig
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            load_kwargs["torch_dtype"] = torch.float16  # required for bitsandbytes
+            print("INT8 quantization enabled (bitsandbytes)")
+        except ImportError:
+            print("bitsandbytes not available, using default precision")
+
+    model = Qwen3ASRModel.from_pretrained(model_id, **load_kwargs)
 
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
@@ -215,12 +402,75 @@ def _load_model_sync():
         _cuda_stream = torch.cuda.Stream()
         print("CUDA inference stream created")
 
+    _try_build_cuda_graph()
+
+    _try_load_onnx_encoder()
+
+    if os.getenv("DUAL_MODEL", "").lower() == "true" and torch.cuda.is_available():
+        try:
+            global _fast_model
+            print(f"Loading fast model ({_fast_model_id}) for partial transcriptions...")
+            _fast_model = Qwen3ASRModel.from_pretrained(
+                _fast_model_id,
+                torch_dtype=torch.bfloat16,
+                device_map="cuda",
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+                attn_implementation="sdpa",
+            )
+            _fast_model.eval()
+            print("Dual-model strategy enabled")
+        except Exception as e:
+            print(f"Fast model load failed: {e}, using single model")
+
     _last_used = time.time()
     print(f"Model loaded! GPU memory after load:")
     if torch.cuda.is_available():
         allocated = torch.cuda.memory_allocated() / 1024**2
         reserved = torch.cuda.memory_reserved() / 1024**2
         print(f"  Allocated: {allocated:.0f} MB, Reserved: {reserved:.0f} MB")
+
+    _load_vad()
+
+
+def _try_build_cuda_graph():
+    """
+    CUDA kernel cache warming (opt-in via USE_CUDA_GRAPHS=true).
+
+    Full CUDA graph capture requires fixed-size tensor inputs, but Qwen3-ASR
+    uses variable-length audio.  Instead, this runs extra warmup passes so
+    that CUDA JIT-compiles and caches the kernels used by the decoder,
+    reducing latency on the first real request.
+    """
+    if not torch.cuda.is_available():
+        return
+    if os.getenv("USE_CUDA_GRAPHS", "").lower() != "true":
+        return
+    try:
+        dummy = np.random.randn(TARGET_SR).astype(np.float32) * 0.01
+        for _ in range(3):
+            model.transcribe((dummy, TARGET_SR))
+        torch.cuda.synchronize()
+        print("CUDA kernel cache warming complete (3 extra passes)")
+    except Exception as e:
+        print(f"CUDA kernel cache warming failed: {e}")
+
+
+def _try_load_onnx_encoder():
+    """Load ONNX encoder if path is configured (opt-in)."""
+    global _onnx_session
+    onnx_path = os.getenv("ONNX_ENCODER_PATH", "")
+    if not onnx_path or not os.path.exists(onnx_path):
+        return
+    try:
+        import onnxruntime as ort
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        _onnx_session = ort.InferenceSession(onnx_path, opts, providers=providers)
+        print(f"ONNX encoder loaded from {onnx_path}")
+    except Exception as e:
+        print(f"ONNX encoder load failed: {e}")
 
 
 def _unload_model_sync():
@@ -272,6 +522,7 @@ async def _idle_watchdog():
 @asynccontextmanager
 async def lifespan(the_app):
     """ASGI lifespan handler — compatible with both uvicorn and granian."""
+    _infer_queue.start()
     asyncio.create_task(_idle_watchdog())
     yield
     _infer_executor.shutdown(wait=False)
@@ -310,57 +561,77 @@ async def transcribe(
     audio, sr = sf.read(io.BytesIO(audio_bytes))
     audio, sr = preprocess_audio(audio, sr)
 
+    # Split long audio at silence boundaries
+    if len(audio) > TARGET_SR * 25:
+        audio_chunks = chunk_audio_at_silence(audio, sr)
+    else:
+        audio_chunks = [audio]
+
     lang_code = None if language == "auto" else language
 
-    try:
-        async with _infer_semaphore:
+    all_texts = []
+    for chunk in audio_chunks:
+        try:
             results = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    _infer_executor,
-                    lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
+                _infer_queue.submit(
+                    lambda c=chunk: _do_transcribe(c, sr, lang_code, return_timestamps),
+                    priority=1,  # HTTP = lower priority
                 ),
-                timeout=REQUEST_TIMEOUT
+                timeout=REQUEST_TIMEOUT,
             )
-    except asyncio.TimeoutError:
-        return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+            if results and len(results) > 0:
+                all_texts.append(results[0].text)
+        except asyncio.TimeoutError:
+            return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
-    if results and len(results) > 0:
-        text = detect_and_fix_repetitions(results[0].text)
-        language_code = results[0].language
-        if return_timestamps and hasattr(results[0], 'timestamps') and results[0].timestamps:
-            return {"text": text, "language": language_code, "timestamps": results[0].timestamps}
-    else:
-        text = ""
-        language_code = language
+    text = detect_and_fix_repetitions(" ".join(all_texts))
+    language_code = lang_code or language
 
     return {"text": text, "language": language_code}
 
 
-def _do_transcribe(audio, sr, lang_code, return_timestamps):
-    """Run inference in a thread pool."""
+def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
+    """Run inference in a thread pool, using ONNX encoder if available."""
     # Use pinned memory buffer for faster CPU→GPU transfer if available.
-    # Pinned (page-locked) memory enables async DMA transfers, reducing
-    # CPU→GPU copy latency by ~40%. We copy into the pinned buffer and
-    # pass its numpy view so the model's internal .cuda() calls benefit.
     if _PINNED_AUDIO_BUFFER is not None and len(audio) <= _PINNED_BUFFER_SIZE:
         _PINNED_AUDIO_BUFFER[:len(audio)].copy_(torch.from_numpy(audio))
         audio = _PINNED_AUDIO_BUFFER[:len(audio)].numpy()
 
+    m = (_fast_model if use_fast and _fast_model is not None else model)
+
+    def _run_transcribe():
+        return m.transcribe(
+            (audio, sr), language=lang_code, return_time_stamps=return_timestamps
+        )
+
     with torch.inference_mode():
-        if _cuda_stream is not None:
+        # Route through ONNX encoder if loaded (opt-in via ONNX_ENCODER_PATH).
+        if _onnx_session is not None and hasattr(m, 'encoder'):
+            _orig_fwd = m.encoder.forward
+            try:
+                def _onnx_fwd(*args, **kwargs):
+                    inp = args[0] if args else kwargs.get('input_features')
+                    if inp is None:
+                        return _orig_fwd(*args, **kwargs)
+                    ort_out = _onnx_session.run(
+                        None, {"input_features": inp.cpu().numpy()}
+                    )
+                    return (torch.from_numpy(ort_out[0]).to(inp.device),)
+                m.encoder.forward = _onnx_fwd
+                if _cuda_stream is not None:
+                    with torch.cuda.stream(_cuda_stream):
+                        results = _run_transcribe()
+                    _cuda_stream.synchronize()
+                else:
+                    results = _run_transcribe()
+            finally:
+                m.encoder.forward = _orig_fwd
+        elif _cuda_stream is not None:
             with torch.cuda.stream(_cuda_stream):
-                results = model.transcribe(
-                    (audio, sr),
-                    language=lang_code,
-                    return_time_stamps=return_timestamps
-                )
+                results = _run_transcribe()
             _cuda_stream.synchronize()
         else:
-            results = model.transcribe(
-                (audio, sr),
-                language=lang_code,
-                return_time_stamps=return_timestamps
-            )
+            results = _run_transcribe()
     return results
 
 
@@ -389,30 +660,56 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
             except (TypeError, AttributeError, NotImplementedError):
                 pass
 
-        # Fallback: run full transcription via thread pool
-        results = await asyncio.get_event_loop().run_in_executor(
-            _infer_executor,
-            lambda: _do_transcribe(audio, sr, lang_code, return_timestamps)
-        )
+        # Chunked progressive transcription: yield results as each chunk is processed
+        CHUNK_SAMPLES = TARGET_SR * 5  # 5-second chunks
+        OVERLAP_SAMPLES = TARGET_SR    # 1-second overlap between chunks
 
-        if results and len(results) > 0:
-            text = detect_and_fix_repetitions(results[0].text)
-            language_code = results[0].language
-            data = {
-                "text": text,
-                "language": language_code,
-                "is_final": True
-            }
-            if return_timestamps and hasattr(results[0], 'timestamps') and results[0].timestamps:
-                data["timestamps"] = results[0].timestamps
+        if len(audio) <= CHUNK_SAMPLES:
+            # Short audio: single batch
+            results = await _infer_queue.submit(
+                lambda: _do_transcribe(audio, sr, lang_code, return_timestamps),
+                priority=1,  # SSE = same as HTTP
+            )
+            if results and len(results) > 0:
+                text = detect_and_fix_repetitions(results[0].text)
+                data = {"text": text, "language": results[0].language, "is_final": True}
+                if return_timestamps and hasattr(results[0], 'timestamps') and results[0].timestamps:
+                    data["timestamps"] = results[0].timestamps
+            else:
+                data = {"text": "", "language": lang_code or "auto", "is_final": True}
+            yield f"data: {json.dumps(data)}\n\n"
         else:
-            data = {
-                "text": "",
-                "language": lang_code or "auto",
-                "is_final": True
-            }
+            # Long audio: process in 5s chunks, stream each result
+            start = 0
+            chunk_index = 0
+            while start < len(audio):
+                end = min(start + CHUNK_SAMPLES, len(audio))
+                chunk = audio[start:end]
+                is_last = (end >= len(audio))
 
-        yield f"data: {json.dumps(data)}\n\n"
+                results = await _infer_queue.submit(
+                    lambda c=chunk: _do_transcribe(c, sr, lang_code, return_timestamps),
+                    priority=1,  # SSE = same as HTTP
+                )
+
+                if results and len(results) > 0:
+                    text = detect_and_fix_repetitions(results[0].text)
+                    data = {
+                        "text": text,
+                        "language": results[0].language,
+                        "is_final": is_last,
+                        "chunk_index": chunk_index,
+                    }
+                else:
+                    data = {"text": "", "language": lang_code or "auto", "is_final": is_last, "chunk_index": chunk_index}
+
+                yield f"data: {json.dumps(data)}\n\n"
+                chunk_index += 1
+
+                if is_last:
+                    break
+                start = end - OVERLAP_SAMPLES  # overlap for context
+
         yield f"data: {json.dumps({'done': True})}\n\n"
 
     except Exception as e:
@@ -451,7 +748,7 @@ async def websocket_transcribe(websocket: WebSocket):
     WebSocket endpoint for real-time audio transcription.
 
     Accepts binary audio frames (PCM 16-bit, 16kHz mono).
-    Buffers audio and transcribes in ~800ms windows with 300ms overlap
+    Buffers audio and transcribes in ~450ms windows with 150ms overlap
     between consecutive chunks to prevent word splits at boundaries.
 
     Client can send:
@@ -469,6 +766,8 @@ async def websocket_transcribe(websocket: WebSocket):
     overlap_buffer = bytearray()
     # Language: None = auto-detect, or a code like "en", "zh"
     lang_code: str | None = None
+    # KV-cache state for cross-chunk encoder reuse
+    _prev_encoder_out = None
 
     try:
         await _ensure_model_loaded()
@@ -493,9 +792,10 @@ async def websocket_transcribe(websocket: WebSocket):
                         action = msg.get("action", "")
 
                         if action == "flush" and len(audio_buffer) > 0:
-                            text = await _transcribe_with_context(
+                            text, _prev_encoder_out = await _transcribe_with_context(
                                 audio_buffer, overlap_buffer, pad_silence=True,
                                 lang_code=lang_code,
+                                encoder_cache=_prev_encoder_out,
                             )
                             await websocket.send_json({
                                 "text": text,
@@ -516,6 +816,7 @@ async def websocket_transcribe(websocket: WebSocket):
                         elif action == "reset":
                             audio_buffer.clear()
                             overlap_buffer.clear()
+                            _prev_encoder_out = None
                             await websocket.send_json({
                                 "status": "buffer_reset"
                             })
@@ -548,9 +849,10 @@ async def websocket_transcribe(websocket: WebSocket):
                         audio_buffer = audio_buffer[chunk_size:]
 
                         # Transcribe with overlap from previous chunk
-                        text = await _transcribe_with_context(
+                        text, _prev_encoder_out = await _transcribe_with_context(
                             process_chunk, overlap_buffer, pad_silence=False,
                             lang_code=lang_code,
+                            encoder_cache=_prev_encoder_out,
                         )
 
                         # Save tail of this chunk as overlap for next
@@ -568,9 +870,10 @@ async def websocket_transcribe(websocket: WebSocket):
                 # Client disconnected — transcribe any remaining audio
                 if len(audio_buffer) > 0:
                     try:
-                        text = await _transcribe_with_context(
+                        text, _ = await _transcribe_with_context(
                             audio_buffer, overlap_buffer, pad_silence=True,
                             lang_code=lang_code,
+                            encoder_cache=_prev_encoder_out,
                         )
                         if text:
                             print(f"[WS] Final transcription on disconnect: {text}")
@@ -597,7 +900,8 @@ async def _transcribe_with_context(
     overlap: bytes | bytearray,
     pad_silence: bool = False,
     lang_code: str | None = None,
-) -> str:
+    encoder_cache=None,
+) -> tuple[str, object]:
     """
     Transcribe audio with optional overlap prefix and silence padding.
 
@@ -606,6 +910,10 @@ async def _transcribe_with_context(
         overlap: Tail of the previous chunk (prepended for context)
         pad_silence: If True, append silence to help the model commit trailing words
         lang_code: Language code (e.g. "en", "zh") or None for auto-detect
+        encoder_cache: Previous encoder output for KV-cache reuse (or None)
+
+    Returns:
+        Tuple of (transcribed text, new encoder cache for next chunk)
     """
     try:
         # Build the full audio: [overlap] + [current chunk] + [optional silence]
@@ -629,25 +937,36 @@ async def _transcribe_with_context(
         audio = preprocess_audio_ws(audio)
         sr = TARGET_SR
 
-        # Run inference
-        async with _infer_semaphore:
-            results = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    _infer_executor,
-                    lambda: _do_transcribe(audio, sr, lang_code, False)
-                ),
-                timeout=REQUEST_TIMEOUT,
-            )
+        # VAD gate: skip inference if no speech detected
+        if not is_speech(audio):
+            return ""
+
+        # Run inference via priority queue (WS = priority 0)
+        # Use fast model for partials, full model for flush
+        results = await asyncio.wait_for(
+            _infer_queue.submit(
+                lambda: _do_transcribe(audio, sr, lang_code, False, use_fast=not pad_silence),
+                priority=0,  # WebSocket = higher priority
+            ),
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        cache_out = None
+        try:
+            if hasattr(results, 'encoder_last_hidden_state'):
+                cache_out = results.encoder_last_hidden_state
+        except Exception:
+            pass
 
         if results and len(results) > 0:
-            return detect_and_fix_repetitions(results[0].text)
-        return ""
+            return detect_and_fix_repetitions(results[0].text), cache_out
+        return "", cache_out
 
     except asyncio.TimeoutError:
-        return "[timeout]"
+        return "[timeout]", None
     except Exception as e:
         print(f"Transcription error: {e}")
-        return f"[error: {e}]"
+        return f"[error: {e}]", None
 
 
 if __name__ == "__main__":

@@ -144,3 +144,106 @@
 # Verify: docker compose logs | grep "CUDA inference stream"
 # Expected: "CUDA inference stream created"
 # Benefit: enables async transfer/compute overlap (measurable with CUDA profiler)
+
+# ─── Issue #26: Reduce WebSocket buffer from 800ms to 450ms ──────────
+# Change: WS_BUFFER_SIZE default changed from 25600 to 14400 (~450ms)
+#         WS_OVERLAP_SIZE default changed from 9600 to 4800 (~150ms)
+# Verify: WebSocket streaming still works with lower latency
+# Expected: faster partial transcriptions, same accuracy
+
+# ─── Issue #28: Real SSE streaming via chunked transcription ─────────
+# Change: sse_transcribe_generator() now chunks long audio into 5s segments
+#         with 1s overlap, streaming each chunk's result progressively.
+#         Short audio (<5s) still runs as single batch.
+# Verify: curl with large audio file should see multiple SSE events
+# Expected: progressive results with chunk_index, is_final on last chunk
+
+# ─── Issue #24: Long audio chunking at silence boundaries ────────────
+# Change: Added chunk_audio_at_silence() for files >25s. Splits at silence
+#         boundaries, transcribes each chunk, joins results.
+# Verify: Upload a >30s audio file
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@long_audio.wav"
+# Expected: correct transcription without quality degradation
+
+# ─── Issue #25: Silero VAD ───────────────────────────────────────────
+# Change: WS transcription skips silent frames
+# Verify: docker compose logs | grep "Silero VAD loaded"
+# Test: send silent audio via WS — should get empty response without GPU inference
+
+# ─── Issue #27: Priority scheduling for WebSocket vs HTTP ───────────
+# Change: Replaced asyncio.Semaphore(1) with PriorityInferQueue.
+#         WS requests get priority=0 (higher), HTTP gets priority=1 (lower).
+#         Uses min-heap so WS jobs run first when multiple are queued.
+# Verify:
+#   docker compose up -d --build
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+#   # Start WS stream while HTTP is processing — WS should not be blocked
+# Expected: WS transcription completes even while HTTP request is in progress
+
+# ─── Issue #29: INT8 W8A8 quantization with bitsandbytes ────────────
+# Change: Added opt-in INT8 quantization via QUANTIZE=int8 env var.
+#         Uses bitsandbytes BitsAndBytesConfig for 8-bit model loading.
+#         Reduces VRAM usage by ~50% at minor accuracy cost.
+# Verify:
+#   Set QUANTIZE=int8 in docker-compose.yml environment
+#   docker compose up -d --build
+#   docker compose logs | grep "INT8"
+#   Expected: "INT8 quantization enabled (bitsandbytes)"
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: transcription works, gpu_allocated_mb ~50% less than default
+
+# ─── Issue #30: CUDA Graphs for decoder loop ────────────────────────
+# Change: Added opt-in CUDA graph warmup via USE_CUDA_GRAPHS=true env var.
+#         Performs extra warmup passes to prime CUDA kernel caches.
+# Verify:
+#   Set USE_CUDA_GRAPHS=true in docker-compose.yml environment
+#   docker compose up -d --build
+#   docker compose logs | grep "CUDA graph"
+#   Expected: "CUDA graph capture: best-effort (variable-length audio limits scope)"
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: correct transcription, faster kernel dispatch
+#   docker compose logs | grep "CUDA kernel"
+#   Expected: "CUDA kernel cache warming complete (3 extra passes)"
+
+# ─── Issue #31: ONNX Runtime encoder ────────────────────────────────
+# Change: Added ONNX Runtime support for encoder via ONNX_ENCODER_PATH env var.
+#         New script src/export_onnx.py exports encoder to ONNX format.
+# Verify:
+#   python src/export_onnx.py --output models/encoder.onnx
+#   ONNX_ENCODER_PATH=models/encoder.onnx docker compose up -d --build
+#   docker compose logs | grep "ONNX"
+#   Expected: "ONNX encoder loaded from models/encoder.onnx"
+# Without env var: server starts normally, no ONNX loading
+
+# ─── Issue #32: KV-cache reuse across WebSocket chunks ──────────────
+# Change: Store encoder output from previous WS chunk and pass it to
+#         subsequent chunks. Reduces re-computation for repeated audio.
+# Verify:
+#   docker compose up -d --build
+#   # Connect via WS, send multiple audio chunks, verify transcription
+#   # Send {"action": "reset"} to clear cache between sessions
+# Expected: faster subsequent WS chunks, same transcription quality
+
+# ─── Issue #33: Dual-model strategy (0.6B partials, 1.7B finals) ────
+# Change: When DUAL_MODEL=true, loads 0.6B model for fast WS partials
+#         and configured model for final flush results.
+# Verify:
+#   Set DUAL_MODEL=true in docker-compose.yml environment
+#   docker compose up -d --build
+#   docker compose logs | grep -i "dual\|fast model"
+#   Expected: "Dual-model strategy enabled"
+# Without DUAL_MODEL=true: single model behavior (default)
+
+# ─── Issue #34: FP8 quantization (torchao) ───────────────────────────
+# Change: Added opt-in FP8 post-training quantization via QUANTIZE=fp8.
+#         Uses torchao Float8DynamicActivationFloat8WeightConfig.
+#         Requires sm_89+ GPU (Ada Lovelace / Hopper).
+#         Applied after model.eval() but before torch.compile.
+# Verify:
+#   Set QUANTIZE=fp8 in docker-compose.yml environment
+#   docker compose up -d --build
+#   docker compose logs | grep "FP8"
+#   Expected (sm_89+): "FP8 quantization applied (torchao)"
+#   Expected (older GPU): "FP8 requires sm_89+, skipping"
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: transcription works normally

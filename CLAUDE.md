@@ -50,8 +50,8 @@ All server logic lives in `src/server.py` (~545 lines). Key subsystems:
 
 ### WebSocket Real-Time Transcription (`/ws/transcribe`)
 - Accepts raw PCM: 16-bit little-endian, 16kHz, mono
-- Buffers ~800ms of audio before transcribing (`WS_BUFFER_SIZE`)
-- **Overlap**: Last 300ms of each chunk is prepended to the next chunk to prevent word splits at boundaries (`WS_OVERLAP_SIZE`)
+- Buffers ~450ms of audio before transcribing (`WS_BUFFER_SIZE`)
+- **Overlap**: Last 150ms of each chunk is prepended to the next chunk to prevent word splits at boundaries (`WS_OVERLAP_SIZE`)
 - **Flush silence padding**: 600ms of silence appended before final transcription on `flush` command to help the model commit trailing words (`WS_FLUSH_SILENCE_MS`)
 - Control messages: `flush` (process remaining buffer), `reset` (clear state), `config` (set language)
 - Buffer is transcribed on client disconnect (no audio loss)
@@ -61,8 +61,6 @@ All server logic lives in `src/server.py` (~545 lines). Key subsystems:
 Input audio → mono conversion → float32 normalization → resample to 16kHz (librosa) → peak normalization to [-1, 1]
 
 ### Known Limitations
-- SSE streaming endpoint (`/v1/audio/transcriptions/stream`) falls back to full non-streaming transcription
-- No long-audio chunking — files >30s may degrade quality
 - No repetition/hallucination detection for noisy audio
 - Uses `sdpa` attention (not Flash Attention 2, ~20% slower)
 - No `torch.compile` optimization
@@ -74,8 +72,8 @@ Input audio → mono conversion → float32 normalization → resample to 16kHz 
 | `MODEL_ID` | `Qwen/Qwen3-ASR-0.6B` | HuggingFace model (1.7B gives better multilingual accuracy) |
 | `IDLE_TIMEOUT` | `120` | Seconds before model unloads from GPU (0 = keep loaded) |
 | `REQUEST_TIMEOUT` | `300` | Max inference time per request |
-| `WS_BUFFER_SIZE` | `25600` | WebSocket audio buffer (~800ms at 16kHz) |
-| `WS_OVERLAP_SIZE` | `9600` | Overlap between chunks (~300ms) |
+| `WS_BUFFER_SIZE` | `14400` | WebSocket audio buffer (~450ms at 16kHz) |
+| `WS_OVERLAP_SIZE` | `4800` | Overlap between chunks (~150ms) |
 | `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush |
 
 Port mapping: container 8000 → host 8100.
