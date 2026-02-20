@@ -358,6 +358,8 @@ async def websocket_transcribe(websocket: WebSocket):
     - JSON: {"action": "flush"} — transcribe remaining buffer with silence padding
     - JSON: {"action": "reset"} — clear buffer and overlap state
     """
+    # WS compression disabled via uvicorn --ws websockets (see Dockerfile CMD)
+    # per-message-deflate would add ~1ms CPU overhead per frame
     await websocket.accept()
 
     # Audio buffer for accumulating incoming chunks
