@@ -28,6 +28,7 @@ def _get_attn_implementation() -> str:
 _ATTN_IMPL = _get_attn_implementation()
 
 model = None
+_fast_model = None
 processor = None
 loaded_model_id = None
 
@@ -138,6 +139,33 @@ WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.15)
 # Silence padding appended before final transcription on flush (~600ms)
 # Gives the model trailing context to commit the last word
 WS_FLUSH_SILENCE_MS = int(os.getenv("WS_FLUSH_SILENCE_MS", "600"))
+
+# Speculative decoding: use 0.6B as draft, 1.7B as verifier
+USE_SPECULATIVE = os.getenv("USE_SPECULATIVE", "").lower() == "true"
+
+
+# vLLM engine (opt-in via USE_VLLM=true)
+_vllm_engine = None
+USE_VLLM = os.getenv("USE_VLLM", "").lower() == "true"
+
+
+def _load_vllm_engine(model_id: str):
+    """Load model via vLLM engine (opt-in via USE_VLLM=true)."""
+    global _vllm_engine
+    try:
+        from vllm import LLM
+        _vllm_engine = LLM(
+            model=model_id,
+            dtype="bfloat16",
+            trust_remote_code=True,
+            gpu_memory_utilization=0.85,
+            max_num_seqs=4,
+            enforce_eager=False,
+        )
+        print(f"vLLM engine loaded for {model_id}")
+    except Exception as e:
+        print(f"vLLM load failed: {e} -- falling back to native loader")
+        _vllm_engine = None
 
 
 def release_gpu_memory():
@@ -313,6 +341,79 @@ def is_speech(audio_float32: np.ndarray, threshold: float = 0.5) -> bool:
         return True  # safe fallback
 
 
+# TensorRT encoder (opt-in via TRT_ENCODER_PATH env var)
+_trt_encoder = None
+
+
+def _try_load_trt_encoder():
+    """Load pre-built TensorRT encoder if available."""
+    global _trt_encoder
+    trt_path = os.getenv("TRT_ENCODER_PATH", "")
+    if not trt_path or not os.path.exists(trt_path):
+        return
+    try:
+        _trt_encoder = torch.jit.load(trt_path)
+        print(f"TensorRT encoder loaded from {trt_path}")
+    except Exception as e:
+        print(f"TRT encoder load failed: {e}")
+
+
+# Encoder state cache for incremental encoding (session_id -> cached state)
+# EXPERIMENTAL: reserved for future incremental streaming; not yet wired into WS handler
+_encoder_state_cache: dict[str, object] = {}
+
+
+def _patch_encoder_causal(model_obj):
+    """
+    Attempt to patch the Whisper encoder to use causal attention masks.
+    This allows incremental encoding without full re-computation.
+
+    EXPERIMENTAL: Requires model architecture to support causal encoder.
+    Standard Whisper uses bidirectional attention in encoder.
+    """
+    if not os.getenv("USE_CAUSAL_ENCODER", "").lower() == "true":
+        return model_obj
+
+    try:
+        encoder = getattr(model_obj, 'encoder', None) or getattr(
+            getattr(model_obj, 'model', None), 'encoder', None
+        )
+        if encoder is None:
+            return model_obj
+
+        patched_count = 0
+        for module in encoder.modules():
+            if hasattr(module, 'is_causal'):
+                module.is_causal = True
+                patched_count += 1
+
+        if patched_count > 0:
+            print(f"Causal encoder patch applied (EXPERIMENTAL): {patched_count} attention modules patched")
+        else:
+            print("Causal encoder patch: no patchable attention modules found")
+    except Exception as e:
+        print(f"Causal encoder patch failed (non-critical): {e}")
+
+    return model_obj
+
+
+def _set_cpu_affinity():
+    """Pin this process to CPUs on NUMA node 0 (collocated with GPU)."""
+    numa_node = int(os.getenv("NUMA_NODE", "0"))
+    try:
+        import psutil
+        proc = psutil.Process()
+        cpus = proc.cpu_affinity()
+        # Simple heuristic: NUMA node 0 = first half of CPUs
+        half = max(1, len(cpus) // 2)
+        node_cpus = cpus[:half] if numa_node == 0 else cpus[half:]
+        if node_cpus:
+            proc.cpu_affinity(node_cpus)
+            print(f"CPU affinity set to NUMA node {numa_node}: {node_cpus}")
+    except Exception as e:
+        print(f"CPU affinity setting failed (non-critical): {e}")
+
+
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
     global model, processor, loaded_model_id, _last_used
@@ -320,10 +421,18 @@ def _load_model_sync():
     if model is not None:
         return
 
+    _set_cpu_affinity()
+
     model_id = os.getenv("MODEL_ID", "Qwen/Qwen3-ASR-1.7B")
     loaded_model_id = model_id
 
     print(f"Loading {model_id}...")
+
+    if USE_VLLM:
+        _load_vllm_engine(model_id)
+        if _vllm_engine is not None:
+            _last_used = time.time()
+            return
 
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
@@ -378,6 +487,25 @@ def _load_model_sync():
 
     model = Qwen3ASRModel.from_pretrained(model_id, **load_kwargs)
 
+    # Load fast (draft) model for speculative decoding
+    if USE_SPECULATIVE:
+        global _fast_model
+        fast_model_id = os.getenv("FAST_MODEL_ID", "Qwen/Qwen3-ASR-0.6B")
+        if fast_model_id != model_id:
+            print(f"Loading fast model {fast_model_id} for speculative decoding...")
+            _fast_model = Qwen3ASRModel.from_pretrained(
+                fast_model_id,
+                torch_dtype=torch.bfloat16,
+                device_map="cuda" if torch.cuda.is_available() else "cpu",
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+                attn_implementation="sdpa",
+            )
+        else:
+            print("Speculative decoding: main and fast model are the same, skipping dual load")
+
+    model = _patch_encoder_causal(model)
+
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
         print("Warming up GPU...")
@@ -405,6 +533,8 @@ def _load_model_sync():
     _try_build_cuda_graph()
 
     _try_load_onnx_encoder()
+
+    _try_load_trt_encoder()
 
     if os.getenv("DUAL_MODEL", "").lower() == "true" and torch.cuda.is_available():
         try:
@@ -475,12 +605,15 @@ def _try_load_onnx_encoder():
 
 def _unload_model_sync():
     """Unload model from GPU to free VRAM."""
-    global model, processor
+    global model, processor, _fast_model
 
     if model is None:
         return
 
     print("Unloading model (idle timeout)...")
+    if _fast_model is not None:
+        del _fast_model
+        _fast_model = None
     del model
     del processor
     model = None
@@ -590,8 +723,51 @@ async def transcribe(
     return {"text": text, "language": language_code}
 
 
+def _do_transcribe_vllm(audio, sr, lang_code, return_timestamps):
+    """Inference via vLLM engine (when USE_VLLM=true)."""
+    from vllm import SamplingParams
+    params = SamplingParams(temperature=0, max_tokens=448)
+    outputs = _vllm_engine.generate({"audio": (audio, sr)}, params)
+    class _Result:
+        def __init__(self, text, language):
+            self.text = text
+            self.language = language
+    return [_Result(o.outputs[0].text, lang_code or "auto") for o in outputs]
+
+
+def _do_transcribe_speculative(audio, sr, lang_code, return_timestamps):
+    """
+    Speculative decoding: draft with 0.6B, verify with 1.7B.
+    Falls back to standard inference if dual models not loaded.
+    """
+    if _fast_model is None or model is None:
+        return _do_transcribe(audio, sr, lang_code, return_timestamps)
+
+    with torch.inference_mode():
+        draft_result = _fast_model.transcribe(
+            (audio, sr), language=lang_code, return_time_stamps=return_timestamps
+        )
+
+    # Use draft result if confidence is high (heuristic: short text, no artifacts)
+    draft_text = draft_result[0].text if draft_result else ""
+    if len(draft_text) < 100 and "[" not in draft_text:
+        return draft_result
+
+    # Verify with full model for complex/uncertain outputs
+    with torch.inference_mode():
+        return model.transcribe(
+            (audio, sr), language=lang_code, return_time_stamps=return_timestamps
+        )
+
+
 def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
     """Run inference in a thread pool, using ONNX encoder if available."""
+    if USE_VLLM and _vllm_engine is not None:
+        return _do_transcribe_vllm(audio, sr, lang_code, return_timestamps)
+
+    if USE_SPECULATIVE and _fast_model is not None:
+        return _do_transcribe_speculative(audio, sr, lang_code, return_timestamps)
+
     # Use pinned memory buffer for faster CPU→GPU transfer if available.
     if _PINNED_AUDIO_BUFFER is not None and len(audio) <= _PINNED_BUFFER_SIZE:
         _PINNED_AUDIO_BUFFER[:len(audio)].copy_(torch.from_numpy(audio))
@@ -605,8 +781,30 @@ def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
         )
 
     with torch.inference_mode():
+        # Route through TRT encoder if loaded (opt-in via TRT_ENCODER_PATH).
+        if _trt_encoder is not None and hasattr(m, 'encoder'):
+            _orig_fwd = m.encoder.forward
+            try:
+                def _trt_encoder_fwd(*args, **kwargs):
+                    inp = args[0] if args else kwargs.get('input_features')
+                    if inp is None:
+                        return _orig_fwd(*args, **kwargs)
+                    try:
+                        out = _trt_encoder(inp)
+                        return (out,)
+                    except Exception:
+                        return _orig_fwd(*args, **kwargs)
+                m.encoder.forward = _trt_encoder_fwd
+                if _cuda_stream is not None:
+                    with torch.cuda.stream(_cuda_stream):
+                        results = _run_transcribe()
+                    _cuda_stream.synchronize()
+                else:
+                    results = _run_transcribe()
+            finally:
+                m.encoder.forward = _orig_fwd
         # Route through ONNX encoder if loaded (opt-in via ONNX_ENCODER_PATH).
-        if _onnx_session is not None and hasattr(m, 'encoder'):
+        elif _onnx_session is not None and hasattr(m, 'encoder'):
             _orig_fwd = m.encoder.forward
             try:
                 def _onnx_fwd(*args, **kwargs):

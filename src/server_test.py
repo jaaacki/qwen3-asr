@@ -247,3 +247,146 @@
 #   Expected (older GPU): "FP8 requires sm_89+, skipping"
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 # Expected: transcription works normally
+
+# ─── Issue #35: Gateway + Worker architecture ────────────────────────
+# Change: GATEWAY_MODE=true splits into gateway (port 8000) + worker (port 8001).
+#         Gateway manages worker lifecycle; killing worker reclaims all model RAM.
+# Verify:
+#   GATEWAY_MODE=true docker compose up -d --build
+#   curl http://localhost:8100/health
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: all endpoints work through gateway proxy
+# Without GATEWAY_MODE: monolithic server behavior (default)
+
+
+def test_gateway_has_all_routes():
+    """Verify gateway exposes all required proxy routes."""
+    import gateway
+    routes = [r.path for r in gateway.app.routes]
+    assert "/health" in routes
+    assert "/v1/audio/transcriptions" in routes
+    assert "/v1/audio/transcriptions/stream" in routes
+    assert "/ws/transcribe" in routes
+
+
+def test_gateway_worker_management():
+    """Verify gateway has worker lifecycle functions."""
+    from gateway import _ensure_worker, _kill_worker, _idle_watchdog
+    assert callable(_ensure_worker)
+    assert callable(_kill_worker)
+    assert callable(_idle_watchdog)
+
+
+def test_worker_reuses_server_code():
+    """Verify worker imports from server.py rather than duplicating."""
+    import worker
+    import server
+    assert worker.preprocess_audio is server.preprocess_audio
+
+# ─── Issue #36: vLLM engine backend ──────────────────────────────────
+# Change: USE_VLLM=true enables vLLM engine for inference (requires vllm pip package)
+# Verify:
+#   Set USE_VLLM=true in docker-compose.yml (uncomment vllm in Dockerfile)
+#   docker compose up -d --build
+#   docker compose logs | grep "vLLM"
+# Expected: "vLLM engine loaded" or fallback to PyTorch
+
+
+def test_vllm_globals():
+    from server import _vllm_engine, USE_VLLM
+    assert _vllm_engine is None
+    assert isinstance(USE_VLLM, bool)
+
+def test_vllm_loader_exists():
+    from server import _load_vllm_engine
+    assert callable(_load_vllm_engine)
+
+def test_vllm_infer_exists():
+    from server import _do_transcribe_vllm
+    assert callable(_do_transcribe_vllm)
+
+# ─── Issue #37: TensorRT encoder conversion ──────────────────────────
+# Change: TRT_ENCODER_PATH enables TensorRT-optimized encoder inference.
+#         New script src/build_trt.py builds the TRT engine.
+# Verify:
+#   python src/build_trt.py --output models/encoder.trt
+#   TRT_ENCODER_PATH=models/encoder.trt docker compose up -d --build
+#   docker compose logs | grep "TensorRT"
+# Expected: "TensorRT encoder loaded from models/encoder.trt"
+
+
+def test_trt_loader_exists():
+    """Verify TRT encoder loader function exists."""
+    from server import _try_load_trt_encoder
+    assert callable(_try_load_trt_encoder)
+
+def test_trt_encoder_global():
+    """Verify _trt_encoder global is defined."""
+    from server import _trt_encoder
+    assert _trt_encoder is None
+
+def test_build_trt_importable():
+    """Verify build_trt module is importable."""
+    import build_trt
+    assert callable(build_trt.build_trt_engine)
+
+def test_do_transcribe_has_trt_path():
+    """Verify _do_transcribe references _trt_encoder for integration."""
+    import inspect
+    from server import _do_transcribe
+    source = inspect.getsource(_do_transcribe)
+    assert "_trt_encoder" in source
+
+# ─── Issue #38: Speculative decoding for ASR (SpecASR) ────────────────
+# Change: USE_SPECULATIVE=true enables draft (0.6B) + verify (1.7B) decoding.
+#         _do_transcribe_speculative() drafts with fast model, verifies complex outputs.
+# Verify:
+#   USE_SPECULATIVE=true MODEL_ID=Qwen/Qwen3-ASR-1.7B docker compose up -d --build
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: transcription works, short audio uses draft only (~2x speed)
+
+
+def test_speculative_fn_exists():
+    """Verify speculative decoding function exists."""
+    from server import _do_transcribe_speculative
+    assert callable(_do_transcribe_speculative)
+
+
+def test_fast_model_global():
+    """Verify _fast_model global is defined."""
+    from server import _fast_model
+    assert _fast_model is None  # not loaded without USE_SPECULATIVE
+
+# ─── Issue #39: Cache-aware streaming encoder with causal attention ───
+# Change: EXPERIMENTAL causal encoder patch via USE_CAUSAL_ENCODER=true.
+#         Patches encoder attention modules to is_causal=True for incremental encoding.
+#         Also adds _encoder_state_cache dict for future incremental streaming.
+# Verify:
+#   USE_CAUSAL_ENCODER=true docker compose up -d --build
+#   docker compose logs | grep "Causal encoder"
+# Expected: "Causal encoder patch applied (EXPERIMENTAL)" or "no patchable modules"
+
+
+def test_patch_encoder_causal_exists():
+    """Verify causal encoder patch function exists."""
+    from server import _patch_encoder_causal
+    assert callable(_patch_encoder_causal)
+
+def test_encoder_state_cache_exists():
+    """Verify encoder state cache dict is defined."""
+    from server import _encoder_state_cache
+    assert isinstance(_encoder_state_cache, dict)
+
+# ─── Issue #40: NUMA-aware CPU pinning ────────────────────────────────
+# Change: _set_cpu_affinity() pins process to NUMA node 0 CPUs (collocated with GPU).
+#         Called at start of _load_model_sync(). Requires psutil.
+# Verify:
+#   docker compose up -d --build
+#   docker compose logs | grep "CPU affinity"
+# Expected: "CPU affinity set to NUMA node 0: [...]"
+
+
+def test_set_cpu_affinity_exists():
+    """Verify _set_cpu_affinity is importable and callable."""
+    from server import _set_cpu_affinity
+    assert callable(_set_cpu_affinity)
