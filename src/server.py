@@ -90,6 +90,14 @@ def preprocess_audio(audio: np.ndarray, sr: int) -> tuple[np.ndarray, int]:
     return audio, sr
 
 
+def preprocess_audio_ws(audio: np.ndarray) -> np.ndarray:
+    """Fast path for WebSocket PCM: already mono, float32, at 16kHz. Only normalize."""
+    peak = np.abs(audio).max()
+    if peak > 0 and peak != 1.0:
+        audio = audio / peak
+    return audio
+
+
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
     global model, processor, loaded_model_id, _last_used
@@ -514,8 +522,9 @@ async def _transcribe_with_context(
         audio = np.frombuffer(full_audio, dtype=np.int16)
         audio = audio.astype(np.float32) / 32768.0
 
-        # Preprocess (mono, normalize)
-        audio, sr = preprocess_audio(audio, TARGET_SR)
+        # Fast path: WS audio is already mono, float32, at 16kHz
+        audio = preprocess_audio_ws(audio)
+        sr = TARGET_SR
 
         # Run inference
         async with _infer_semaphore:

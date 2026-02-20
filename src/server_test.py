@@ -69,3 +69,14 @@
 #   # Use WebSocket client from docs/WEBSOCKET_USAGE.md to stream audio
 #   # Compare transcription output — should be identical
 # Expected: eliminates one full buffer copy per WS chunk, same transcription quality
+
+# ─── Issue #15: Optimize WebSocket audio preprocessing path ───────────────
+# Change: Added preprocess_audio_ws() fast path that only does peak normalization.
+#         Replaced preprocess_audio(audio, TARGET_SR) call in _transcribe_with_context()
+#         with preprocess_audio_ws(audio) since WS audio is already mono, float32, 16kHz.
+# Verify:
+#   docker compose up -d --build
+#   # Use WebSocket client from docs/WEBSOCKET_USAGE.md to stream audio
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+#   # Both HTTP and WS should produce correct transcriptions
+# Expected: faster WS transcription (skips redundant mono/resample/cast), same quality
