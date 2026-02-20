@@ -113,3 +113,9 @@
 # Verify: docker compose up -d --build
 #   curl http://localhost:8100/health  →  "model_id": "Qwen/Qwen3-ASR-1.7B"
 # Override: set MODEL_ID=Qwen/Qwen3-ASR-0.6B in compose.yaml environment
+
+# ─── Issue #10: Flash Attention 2 ────────────────────────────────────
+# Change: uses flash_attention_2 if flash-attn package is installed
+# Verify: docker compose logs | grep "Attention implementation:"
+# Expected: "Attention implementation: flash_attention_2"
+# Fallback: if flash-attn build fails, logs will show "sdpa"
