@@ -28,6 +28,7 @@ RUN pip install --no-cache-dir \
     bitsandbytes \
     onnxruntime-gpu \
     aiohttp \
+    psutil \
     # vllm \  # Uncomment for USE_VLLM=true support (large dependency)
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 

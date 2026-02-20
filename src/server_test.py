@@ -376,3 +376,17 @@ def test_encoder_state_cache_exists():
     """Verify encoder state cache dict is defined."""
     from server import _encoder_state_cache
     assert isinstance(_encoder_state_cache, dict)
+
+# ─── Issue #40: NUMA-aware CPU pinning ────────────────────────────────
+# Change: _set_cpu_affinity() pins process to NUMA node 0 CPUs (collocated with GPU).
+#         Called at start of _load_model_sync(). Requires psutil.
+# Verify:
+#   docker compose up -d --build
+#   docker compose logs | grep "CPU affinity"
+# Expected: "CPU affinity set to NUMA node 0: [...]"
+
+
+def test_set_cpu_affinity_exists():
+    """Verify _set_cpu_affinity is importable and callable."""
+    from server import _set_cpu_affinity
+    assert callable(_set_cpu_affinity)

@@ -397,12 +397,31 @@ def _patch_encoder_causal(model_obj):
     return model_obj
 
 
+def _set_cpu_affinity():
+    """Pin this process to CPUs on NUMA node 0 (collocated with GPU)."""
+    numa_node = int(os.getenv("NUMA_NODE", "0"))
+    try:
+        import psutil
+        proc = psutil.Process()
+        cpus = proc.cpu_affinity()
+        # Simple heuristic: NUMA node 0 = first half of CPUs
+        half = max(1, len(cpus) // 2)
+        node_cpus = cpus[:half] if numa_node == 0 else cpus[half:]
+        if node_cpus:
+            proc.cpu_affinity(node_cpus)
+            print(f"CPU affinity set to NUMA node {numa_node}: {node_cpus}")
+    except Exception as e:
+        print(f"CPU affinity setting failed (non-critical): {e}")
+
+
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
     global model, processor, loaded_model_id, _last_used
 
     if model is not None:
         return
+
+    _set_cpu_affinity()
 
     model_id = os.getenv("MODEL_ID", "Qwen/Qwen3-ASR-1.7B")
     loaded_model_id = model_id
