@@ -59,6 +59,9 @@ TARGET_SR = 16000
 _PINNED_AUDIO_BUFFER: torch.Tensor | None = None
 _PINNED_BUFFER_SIZE = TARGET_SR * 30  # 480000 samples
 
+# CUDA stream for inference — allows transfer/compute overlap
+_cuda_stream: torch.cuda.Stream | None = None
+
 # ── WebSocket streaming config ──────────────────────────────────────────────
 # Buffer size: how much audio to accumulate before transcribing (~800ms default)
 # At 16kHz 16-bit mono: 800ms = 25600 bytes
@@ -207,6 +210,11 @@ def _load_model_sync():
         ).pin_memory()
         print(f"Pinned memory buffer allocated: {_PINNED_BUFFER_SIZE * 4 / 1024:.0f} KB")
 
+    global _cuda_stream
+    if torch.cuda.is_available():
+        _cuda_stream = torch.cuda.Stream()
+        print("CUDA inference stream created")
+
     _last_used = time.time()
     print(f"Model loaded! GPU memory after load:")
     if torch.cuda.is_available():
@@ -339,11 +347,20 @@ def _do_transcribe(audio, sr, lang_code, return_timestamps):
         audio = _PINNED_AUDIO_BUFFER[:len(audio)].numpy()
 
     with torch.inference_mode():
-        results = model.transcribe(
-            (audio, sr),
-            language=lang_code,
-            return_time_stamps=return_timestamps
-        )
+        if _cuda_stream is not None:
+            with torch.cuda.stream(_cuda_stream):
+                results = model.transcribe(
+                    (audio, sr),
+                    language=lang_code,
+                    return_time_stamps=return_timestamps
+                )
+            _cuda_stream.synchronize()
+        else:
+            results = model.transcribe(
+                (audio, sr),
+                language=lang_code,
+                return_time_stamps=return_timestamps
+            )
     return results
 
 
