@@ -140,6 +140,30 @@ WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.15)
 WS_FLUSH_SILENCE_MS = int(os.getenv("WS_FLUSH_SILENCE_MS", "600"))
 
 
+# vLLM engine (opt-in via USE_VLLM=true)
+_vllm_engine = None
+USE_VLLM = os.getenv("USE_VLLM", "").lower() == "true"
+
+
+def _load_vllm_engine(model_id: str):
+    """Load model via vLLM engine (opt-in via USE_VLLM=true)."""
+    global _vllm_engine
+    try:
+        from vllm import LLM
+        _vllm_engine = LLM(
+            model=model_id,
+            dtype="bfloat16",
+            trust_remote_code=True,
+            gpu_memory_utilization=0.85,
+            max_num_seqs=4,
+            enforce_eager=False,
+        )
+        print(f"vLLM engine loaded for {model_id}")
+    except Exception as e:
+        print(f"vLLM load failed: {e} -- falling back to native loader")
+        _vllm_engine = None
+
+
 def release_gpu_memory():
     """Force release of unused GPU memory back to the system."""
     gc.collect()
@@ -324,6 +348,12 @@ def _load_model_sync():
     loaded_model_id = model_id
 
     print(f"Loading {model_id}...")
+
+    if USE_VLLM:
+        _load_vllm_engine(model_id)
+        if _vllm_engine is not None:
+            _last_used = time.time()
+            return
 
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
@@ -590,8 +620,23 @@ async def transcribe(
     return {"text": text, "language": language_code}
 
 
+def _do_transcribe_vllm(audio, sr, lang_code, return_timestamps):
+    """Inference via vLLM engine (when USE_VLLM=true)."""
+    from vllm import SamplingParams
+    params = SamplingParams(temperature=0, max_tokens=448)
+    outputs = _vllm_engine.generate({"audio": (audio, sr)}, params)
+    class _Result:
+        def __init__(self, text, language):
+            self.text = text
+            self.language = language
+    return [_Result(o.outputs[0].text, lang_code or "auto") for o in outputs]
+
+
 def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
     """Run inference in a thread pool, using ONNX encoder if available."""
+    if USE_VLLM and _vllm_engine is not None:
+        return _do_transcribe_vllm(audio, sr, lang_code, return_timestamps)
+
     # Use pinned memory buffer for faster CPU→GPU transfer if available.
     if _PINNED_AUDIO_BUFFER is not None and len(audio) <= _PINNED_BUFFER_SIZE:
         _PINNED_AUDIO_BUFFER[:len(audio)].copy_(torch.from_numpy(audio))

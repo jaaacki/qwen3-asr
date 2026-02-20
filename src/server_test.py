@@ -282,3 +282,25 @@ def test_worker_reuses_server_code():
     import worker
     import server
     assert worker.preprocess_audio is server.preprocess_audio
+
+# ─── Issue #36: vLLM engine backend ──────────────────────────────────
+# Change: USE_VLLM=true enables vLLM engine for inference (requires vllm pip package)
+# Verify:
+#   Set USE_VLLM=true in docker-compose.yml (uncomment vllm in Dockerfile)
+#   docker compose up -d --build
+#   docker compose logs | grep "vLLM"
+# Expected: "vLLM engine loaded" or fallback to PyTorch
+
+
+def test_vllm_globals():
+    from server import _vllm_engine, USE_VLLM
+    assert _vllm_engine is None
+    assert isinstance(USE_VLLM, bool)
+
+def test_vllm_loader_exists():
+    from server import _load_vllm_engine
+    assert callable(_load_vllm_engine)
+
+def test_vllm_infer_exists():
+    from server import _do_transcribe_vllm
+    assert callable(_do_transcribe_vllm)
