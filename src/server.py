@@ -358,6 +358,45 @@ def _try_load_trt_encoder():
         print(f"TRT encoder load failed: {e}")
 
 
+# Encoder state cache for incremental encoding (session_id -> cached state)
+# EXPERIMENTAL: reserved for future incremental streaming; not yet wired into WS handler
+_encoder_state_cache: dict[str, object] = {}
+
+
+def _patch_encoder_causal(model_obj):
+    """
+    Attempt to patch the Whisper encoder to use causal attention masks.
+    This allows incremental encoding without full re-computation.
+
+    EXPERIMENTAL: Requires model architecture to support causal encoder.
+    Standard Whisper uses bidirectional attention in encoder.
+    """
+    if not os.getenv("USE_CAUSAL_ENCODER", "").lower() == "true":
+        return model_obj
+
+    try:
+        encoder = getattr(model_obj, 'encoder', None) or getattr(
+            getattr(model_obj, 'model', None), 'encoder', None
+        )
+        if encoder is None:
+            return model_obj
+
+        patched_count = 0
+        for module in encoder.modules():
+            if hasattr(module, 'is_causal'):
+                module.is_causal = True
+                patched_count += 1
+
+        if patched_count > 0:
+            print(f"Causal encoder patch applied (EXPERIMENTAL): {patched_count} attention modules patched")
+        else:
+            print("Causal encoder patch: no patchable attention modules found")
+    except Exception as e:
+        print(f"Causal encoder patch failed (non-critical): {e}")
+
+    return model_obj
+
+
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
     global model, processor, loaded_model_id, _last_used
@@ -445,6 +484,8 @@ def _load_model_sync():
             )
         else:
             print("Speculative decoding: main and fast model are the same, skipping dual load")
+
+    model = _patch_encoder_causal(model)
 
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
