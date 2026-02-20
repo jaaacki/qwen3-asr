@@ -26,6 +26,7 @@ RUN pip install --no-cache-dir \
     websockets \
     silero-vad \
     bitsandbytes \
+    onnxruntime-gpu \
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 
 # Flash Attention 2 (built from source for CUDA 12.4 compatibility)

@@ -204,3 +204,13 @@
 # Expected: correct transcription, faster kernel dispatch
 #   docker compose logs | grep "CUDA kernel"
 #   Expected: "CUDA kernel cache warming complete (3 extra passes)"
+
+# ─── Issue #31: ONNX Runtime encoder ────────────────────────────────
+# Change: Added ONNX Runtime support for encoder via ONNX_ENCODER_PATH env var.
+#         New script src/export_onnx.py exports encoder to ONNX format.
+# Verify:
+#   python src/export_onnx.py --output models/encoder.onnx
+#   ONNX_ENCODER_PATH=models/encoder.onnx docker compose up -d --build
+#   docker compose logs | grep "ONNX"
+#   Expected: "ONNX encoder loaded from models/encoder.onnx"
+# Without env var: server starts normally, no ONNX loading
