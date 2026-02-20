@@ -99,6 +99,10 @@ _infer_queue = PriorityInferQueue()
 # ONNX Runtime session for encoder (opt-in via ONNX_ENCODER_PATH)
 _onnx_session = None
 
+# Fast model for partial WS transcriptions (opt-in via DUAL_MODEL=true)
+_fast_model = None
+_fast_model_id = "Qwen/Qwen3-ASR-0.6B"
+
 # Lock to prevent concurrent load/unload
 _model_lock = asyncio.Lock()
 
@@ -394,6 +398,23 @@ def _load_model_sync():
 
     _try_load_onnx_encoder()
 
+    if os.getenv("DUAL_MODEL", "").lower() == "true" and torch.cuda.is_available():
+        try:
+            global _fast_model
+            print(f"Loading fast model ({_fast_model_id}) for partial transcriptions...")
+            _fast_model = Qwen3ASRModel.from_pretrained(
+                _fast_model_id,
+                torch_dtype=torch.bfloat16,
+                device_map="cuda",
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+                attn_implementation="sdpa",
+            )
+            _fast_model.eval()
+            print("Dual-model strategy enabled")
+        except Exception as e:
+            print(f"Fast model load failed: {e}, using single model")
+
     _last_used = time.time()
     print(f"Model loaded! GPU memory after load:")
     if torch.cuda.is_available():
@@ -561,27 +582,25 @@ async def transcribe(
     return {"text": text, "language": language_code}
 
 
-def _do_transcribe(audio, sr, lang_code, return_timestamps):
+def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
     """Run inference in a thread pool."""
     # Use pinned memory buffer for faster CPU→GPU transfer if available.
-    # Pinned (page-locked) memory enables async DMA transfers, reducing
-    # CPU→GPU copy latency by ~40%. We copy into the pinned buffer and
-    # pass its numpy view so the model's internal .cuda() calls benefit.
     if _PINNED_AUDIO_BUFFER is not None and len(audio) <= _PINNED_BUFFER_SIZE:
         _PINNED_AUDIO_BUFFER[:len(audio)].copy_(torch.from_numpy(audio))
         audio = _PINNED_AUDIO_BUFFER[:len(audio)].numpy()
 
+    m = (_fast_model if use_fast and _fast_model is not None else model)
     with torch.inference_mode():
         if _cuda_stream is not None:
             with torch.cuda.stream(_cuda_stream):
-                results = model.transcribe(
+                results = m.transcribe(
                     (audio, sr),
                     language=lang_code,
                     return_time_stamps=return_timestamps
                 )
             _cuda_stream.synchronize()
         else:
-            results = model.transcribe(
+            results = m.transcribe(
                 (audio, sr),
                 language=lang_code,
                 return_time_stamps=return_timestamps
@@ -896,9 +915,10 @@ async def _transcribe_with_context(
             return ""
 
         # Run inference via priority queue (WS = priority 0)
+        # Use fast model for partials, full model for flush
         results = await asyncio.wait_for(
             _infer_queue.submit(
-                lambda: _do_transcribe(audio, sr, lang_code, False),
+                lambda: _do_transcribe(audio, sr, lang_code, False, use_fast=not pad_silence),
                 priority=0,  # WebSocket = higher priority
             ),
             timeout=REQUEST_TIMEOUT,
