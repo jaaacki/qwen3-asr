@@ -50,3 +50,24 @@ The gc.collect() + torch.cuda.empty_cache() pattern — commonly seen in tutoria
 
 ### What could go wrong
 Without periodic empty_cache(), PyTorch's reserved-but-unused memory will show as "allocated" in nvidia-smi even though it's available to PyTorch. This may look like a memory leak but isn't. Only matters if another process on the same GPU needs VRAM — in which case the idle unload watchdog already handles this by unloading the entire model.
+
+---
+
+## 2026-02-20 — What just happened: Phase 1 complete (15 issues merged)
+
+**Type**: What just happened
+**Related**: Phase 1, milestone/phase-1 → main merge
+
+### Pattern
+All 15 Phase 1 issues were implemented in parallel by 5 builders, then merged sequentially into milestone/phase-1 in strict dependency order to prevent server.py conflicts. The merge order grouped changes by the area of server.py they touched:
+1. Model config (top of _load_model_sync)
+2. Hot path (_do_transcribe, _transcribe_with_context, WS handler)
+3. Audio pipeline (preprocess_audio, warmup, new functions)
+4. Major model changes (model creation, attn_implementation)
+5. Threading (executor, pinned memory, CUDA stream globals)
+
+### Lesson learned
+Every builder created src/server_test.py from scratch in their first PR, causing add/add conflicts on every subsequent merge. Future phases should have builders append to the existing file instead of creating it new. The architect ended up resolving most of these conflicts manually to keep the pipeline moving.
+
+### Aha moment
+The pinned memory + CUDA stream combo in _do_transcribe() creates a complete async DMA pipeline: audio data is copied into page-locked memory, then the inference runs on a dedicated CUDA stream. This should enable transfer/compute overlap when profiled with nsys, though the benefit is harder to measure without a GPU profiling setup.

@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.4.0 — 2026-02-20
+
+### Model & Configuration
+- **Default model upgraded to Qwen3-ASR-1.7B** — better multilingual accuracy (#7)
+- **model.eval() after loading** — disables dropout for deterministic inference (#18)
+- **cudnn.benchmark enabled** — auto-selects fastest cuDNN algorithm for fixed-size inputs (#17)
+- **TF32 matmul precision enabled** — ~3x throughput on Ampere+ GPUs (#11)
+- **Flash Attention 2** — with graceful SDPA fallback when unavailable (#10)
+- **torch.compile(mode="reduce-overhead")** — compiled inference with fallback (#9)
+
+### Inference Hot Path
+- **Removed per-request release_gpu_memory()** — saves 5-10ms per request (#14)
+- **Eliminated bytes() copy in WS handler** — bytearray passed directly to numpy (#16)
+- **Fast-path preprocess_audio_ws()** — skips redundant mono/resample for WebSocket audio (#15)
+- **Disabled WS per-message-deflate compression** — saves ~1ms CPU per frame (#20)
+
+### Audio Pipeline
+- **Replaced librosa with torchaudio** for GPU-native resampling (#12)
+- **Warmup with representative noise** instead of silence — better CUDA kernel priming (#19)
+- **Repetition detection** — detect_and_fix_repetitions() post-processing on all outputs (#8)
+
+### Threading & Memory
+- **Dedicated single-thread ThreadPoolExecutor** for GPU inference with thread affinity (#22)
+- **ASGI lifespan handler** — replaces deprecated @app.on_event("startup") (#22)
+- **Pre-allocated pinned memory buffer** (1.92 MB) for fast CPU→GPU DMA transfer (#21)
+- **Dedicated CUDA stream** for inference with transfer/compute overlap (#23)
+
+### Docker
+- **OMP_NUM_THREADS=1 / MKL_NUM_THREADS=1** — prevents CPU thread contention (#13)
+- **--ws websockets** added to uvicorn CMD (#20)
+- **flash-attn** pip install added (#10)
+- **torchaudio** replaces librosa dependency (#12)
+
 ## v0.3.0 — 2026-02-07
 
 ### Changed

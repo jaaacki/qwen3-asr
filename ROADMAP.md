@@ -4,23 +4,23 @@
 _The system achieves sub-100ms inference with proper model configuration and zero-waste hot path._
 
 Issues ordered by dependency:
-- [ ] #18 Ensure model.eval() is called after loading
-- [ ] #14 Remove per-request release_gpu_memory() calls
-- [ ] #16 Eliminate unnecessary bytes() copy in WS transcription
-- [ ] #15 Optimize WebSocket audio preprocessing path
-- [ ] #17 Enable cudnn.benchmark for conv layer auto-tuning
-- [ ] #19 Warmup with representative audio instead of silence
-- [ ] #20 Disable WebSocket per-message-deflate compression
-- [ ] #13 Add OMP_NUM_THREADS and MKL_NUM_THREADS to Dockerfile
-- [ ] #11 Enable TensorFloat-32 (TF32) matmul precision
-- [ ] #9 Enable torch.compile for inference speedup
-- [ ] #10 Switch to Flash Attention 2
-- [ ] #12 Replace librosa with torchaudio for audio resampling
-- [ ] #7 Upgrade to Qwen3-ASR-1.7B model
-- [ ] #8 Implement repetition detection and fixing
-- [ ] #22 Use dedicated inference ThreadPoolExecutor
-- [ ] #21 Pre-allocate pinned memory buffers for GPU transfer
-- [ ] #23 Implement CUDA stream pipelining for transfer/compute overlap
+- [x] #18 Ensure model.eval() is called after loading
+- [x] #14 Remove per-request release_gpu_memory() calls
+- [x] #16 Eliminate unnecessary bytes() copy in WS transcription
+- [x] #15 Optimize WebSocket audio preprocessing path
+- [x] #17 Enable cudnn.benchmark for conv layer auto-tuning
+- [x] #19 Warmup with representative audio instead of silence
+- [x] #20 Disable WebSocket per-message-deflate compression
+- [x] #13 Add OMP_NUM_THREADS and MKL_NUM_THREADS to Dockerfile
+- [x] #11 Enable TensorFloat-32 (TF32) matmul precision
+- [x] #9 Enable torch.compile for inference speedup
+- [x] #10 Switch to Flash Attention 2
+- [x] #12 Replace librosa with torchaudio for audio resampling
+- [x] #7 Upgrade to Qwen3-ASR-1.7B model
+- [x] #8 Implement repetition detection and fixing
+- [x] #22 Use dedicated inference ThreadPoolExecutor
+- [x] #21 Pre-allocate pinned memory buffers for GPU transfer
+- [x] #23 Implement CUDA stream pipelining for transfer/compute overlap
 
 ## Phase 2 — Deep Optimization → v0.5.0
 _The system handles production workloads with sub-50ms inference, VAD-gated processing, and priority-based scheduling._
