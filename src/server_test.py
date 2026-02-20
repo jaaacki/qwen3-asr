@@ -157,3 +157,10 @@
 #         Short audio (<5s) still runs as single batch.
 # Verify: curl with large audio file should see multiple SSE events
 # Expected: progressive results with chunk_index, is_final on last chunk
+
+# ─── Issue #24: Long audio chunking at silence boundaries ────────────
+# Change: Added chunk_audio_at_silence() for files >25s. Splits at silence
+#         boundaries, transcribes each chunk, joins results.
+# Verify: Upload a >30s audio file
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@long_audio.wav"
+# Expected: correct transcription without quality degradation
