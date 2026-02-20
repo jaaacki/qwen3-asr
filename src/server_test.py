@@ -164,3 +164,8 @@
 # Verify: Upload a >30s audio file
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@long_audio.wav"
 # Expected: correct transcription without quality degradation
+
+# ─── Issue #25: Silero VAD ───────────────────────────────────────────
+# Change: WS transcription skips silent frames
+# Verify: docker compose logs | grep "Silero VAD loaded"
+# Test: send silent audio via WS — should get empty response without GPU inference

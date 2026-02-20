@@ -220,6 +220,35 @@ def chunk_audio_at_silence(
     return chunks if chunks else [audio]
 
 
+# Silero VAD — loaded lazily at model startup
+_vad_model = None
+
+
+def _load_vad():
+    """Load Silero VAD model (CPU, lightweight ~1MB)."""
+    global _vad_model
+    try:
+        from silero_vad import load_silero_vad
+        _vad_model = load_silero_vad()
+        _vad_model.eval()
+        print("Silero VAD loaded")
+    except ImportError:
+        print("silero-vad not installed, VAD disabled")
+
+
+def is_speech(audio_float32: np.ndarray, threshold: float = 0.5) -> bool:
+    """Return True if audio contains speech (Silero VAD)."""
+    if _vad_model is None:
+        return True  # fallback: assume speech if VAD not available
+    try:
+        tensor = torch.from_numpy(audio_float32).unsqueeze(0)
+        with torch.no_grad():
+            confidence = _vad_model(tensor, 16000).item()
+        return confidence >= threshold
+    except Exception:
+        return True  # safe fallback
+
+
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
     global model, processor, loaded_model_id, _last_used
@@ -288,6 +317,8 @@ def _load_model_sync():
         allocated = torch.cuda.memory_allocated() / 1024**2
         reserved = torch.cuda.memory_reserved() / 1024**2
         print(f"  Allocated: {allocated:.0f} MB, Reserved: {reserved:.0f} MB")
+
+    _load_vad()
 
 
 def _unload_model_sync():
@@ -727,6 +758,10 @@ async def _transcribe_with_context(
         # Fast path: WS audio is already mono, float32, at 16kHz
         audio = preprocess_audio_ws(audio)
         sr = TARGET_SR
+
+        # VAD gate: skip inference if no speech detected
+        if not is_speech(audio):
+            return ""
 
         # Run inference
         async with _infer_semaphore:
