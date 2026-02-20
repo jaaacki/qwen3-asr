@@ -104,6 +104,8 @@ def _load_model_sync():
 
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
     processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
