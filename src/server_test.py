@@ -233,3 +233,17 @@
 #   docker compose logs | grep -i "dual\|fast model"
 #   Expected: "Dual-model strategy enabled"
 # Without DUAL_MODEL=true: single model behavior (default)
+
+# ─── Issue #34: FP8 quantization (torchao) ───────────────────────────
+# Change: Added opt-in FP8 post-training quantization via QUANTIZE=fp8.
+#         Uses torchao Float8DynamicActivationFloat8WeightConfig.
+#         Requires sm_89+ GPU (Ada Lovelace / Hopper).
+#         Applied after model.eval() but before torch.compile.
+# Verify:
+#   Set QUANTIZE=fp8 in docker-compose.yml environment
+#   docker compose up -d --build
+#   docker compose logs | grep "FP8"
+#   Expected (sm_89+): "FP8 quantization applied (torchao)"
+#   Expected (older GPU): "FP8 requires sm_89+, skipping"
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: transcription works normally

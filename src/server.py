@@ -351,6 +351,21 @@ def _load_model_sync():
     model.eval()
     print(f"Attention implementation: {_ATTN_IMPL}")
 
+    # FP8 post-training quantization (opt-in via QUANTIZE=fp8, requires sm_89+)
+    quantize_mode = os.getenv("QUANTIZE", "").lower()
+    if quantize_mode == "fp8" and torch.cuda.is_available():
+        compute_capability = torch.cuda.get_device_capability()
+        if compute_capability >= (8, 9):  # sm_89+ (Ada/Hopper)
+            try:
+                from torchao.quantization import quantize_, Float8DynamicActivationFloat8WeightConfig
+                quantize_(model, Float8DynamicActivationFloat8WeightConfig())
+                print("FP8 quantization applied (torchao)")
+            except Exception as e:
+                print(f"FP8 quantization failed: {e}")
+        else:
+            cc = f"sm_{compute_capability[0]}{compute_capability[1]}"
+            print(f"FP8 requires sm_89+, current GPU is {cc} -- skipping")
+
     # Compile for faster repeated inference (first call will be slower due to compilation)
     if torch.cuda.is_available():
         try:
