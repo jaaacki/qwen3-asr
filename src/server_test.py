@@ -131,3 +131,10 @@
 # Change: all run_in_executor calls use _infer_executor (1 thread, named)
 # Verify: docker compose logs should show thread name "qwen3-asr-infer_0"
 # curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+
+# ─── Issue #21: pinned memory buffer ──────────────────────────────────────────
+# Change: pre-allocated pinned memory for CPU→GPU audio transfer.
+#         Audio data is copied into pinned buffer and its numpy view is passed
+#         to model.transcribe() so internal .cuda() calls use async DMA transfers.
+# Verify: docker compose logs | grep "Pinned memory"
+# Expected: "Pinned memory buffer allocated: 1920 KB"
