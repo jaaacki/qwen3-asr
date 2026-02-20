@@ -28,6 +28,7 @@ RUN pip install --no-cache-dir \
     bitsandbytes \
     onnxruntime-gpu \
     aiohttp \
+    # vllm \  # Uncomment for USE_VLLM=true support (large dependency)
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 
 # torchao for FP8 quantization (opt-in via QUANTIZE=fp8)
