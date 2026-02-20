@@ -138,3 +138,9 @@
 #         to model.transcribe() so internal .cuda() calls use async DMA transfers.
 # Verify: docker compose logs | grep "Pinned memory"
 # Expected: "Pinned memory buffer allocated: 1920 KB"
+
+# ─── Issue #23: CUDA stream pipelining ────────────────────────────────
+# Change: inference runs inside a dedicated CUDA stream
+# Verify: docker compose logs | grep "CUDA inference stream"
+# Expected: "CUDA inference stream created"
+# Benefit: enables async transfer/compute overlap (measurable with CUDA profiler)
