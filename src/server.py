@@ -106,13 +106,6 @@ _fast_model_id = "Qwen/Qwen3-ASR-0.6B"
 # Lock to prevent concurrent load/unload
 _model_lock = asyncio.Lock()
 
-# Dedicated single-threaded executor for GPU inference
-# Ensures inference always runs on the same OS thread (better GPU context affinity)
-_infer_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1,
-    thread_name_prefix="qwen3-asr-infer",
-)
-
 # Request timeout in seconds
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "300"))
 
