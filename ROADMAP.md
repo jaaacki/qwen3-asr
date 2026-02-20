@@ -42,13 +42,13 @@ Issues ordered by dependency:
 _The system scales to concurrent streams with sub-25ms inference via hardware-optimized engines and architectural redesign._
 
 Issues ordered by dependency:
-- [ ] #35 Gateway + Worker architecture for idle RAM reclamation
-- [ ] #36 Adopt vLLM engine backend
-- [ ] #37 TensorRT conversion for encoder
-- [ ] #38 Speculative decoding for ASR (SpecASR)
-- [ ] #39 Cache-aware streaming encoder with causal attention
-- [ ] #40 NUMA-aware CPU pinning
-- [ ] #41 Evaluate Granian as ASGI server replacement
+- [x] #35 Gateway + Worker architecture for idle RAM reclamation
+- [x] #36 Adopt vLLM engine backend
+- [x] #37 TensorRT conversion for encoder
+- [x] #38 Speculative decoding for ASR (SpecASR)
+- [x] #39 Cache-aware streaming encoder with causal attention
+- [x] #40 NUMA-aware CPU pinning
+- [x] #41 Evaluate Granian as ASGI server replacement
 
 ## Backlog
 _Unplaced items or future considerations._

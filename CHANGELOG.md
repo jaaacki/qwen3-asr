@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.0 — 2026-02-20
+
+### Architecture
+- **Gateway + Worker mode** — `GATEWAY_MODE=true` splits into gateway proxy (port 8000) + worker (port 8001); killing worker reclaims all model RAM (#35)
+- **vLLM engine backend** — opt-in via `USE_VLLM=true` for production-grade serving with PagedAttention (#36)
+- **Speculative decoding (SpecASR)** — opt-in via `USE_SPECULATIVE=true`; drafts with 0.6B, verifies complex outputs with 1.7B for ~2x speed (#38)
+
+### Acceleration
+- **TensorRT encoder** — opt-in via `TRT_ENCODER_PATH`; monkey-patches encoder forward pass with TRT-compiled engine (#37)
+- **Cache-aware causal encoder** — EXPERIMENTAL via `USE_CAUSAL_ENCODER=true`; patches encoder attention to causal masks for incremental encoding (#39)
+
+### Infrastructure
+- **NUMA-aware CPU pinning** — pins process to GPU-collocated NUMA node via `NUMA_NODE` env var (#40)
+- **Granian ASGI server** — opt-in via `USE_GRANIAN=true`; Rust-based alternative to uvicorn (#41)
+
+### Docker
+- Added **psutil**, **granian** dependencies
+- New scripts: **src/gateway.py**, **src/worker.py**, **src/build_trt.py**
+- CMD supports GATEWAY_MODE, USE_GRANIAN, and default uvicorn modes
+- New doc: **docs/GRANIAN_BENCHMARK.md** with evaluation criteria
+
 ## v0.5.0 — 2026-02-20
 
 ### Streaming & Audio Processing

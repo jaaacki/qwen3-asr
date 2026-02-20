@@ -90,3 +90,27 @@ By the end of Phase 2, `_do_transcribe()` handles: pinned memory buffer, fast mo
 
 ### Lesson learned: fix PRs from critic
 The critic caught two real issues after merges: a duplicate `_infer_executor` definition (from the original Phase 1 code surviving alongside the priority queue's executor) and the ONNX session being loaded but never wired into inference. Both were fixed with small follow-up PRs merged into milestone/phase-2 before the milestone PR to main.
+
+---
+
+## 2026-02-20 — What just happened: Phase 3 complete (7 issues merged)
+
+**Type**: What just happened
+**Related**: Phase 3, milestone/phase-3 -> main merge
+
+### Pattern
+Phase 3 issues were merged sequentially in dependency order: gateway/worker (#35) first (foundational architecture), then vLLM (#36) and TensorRT (#37) which add alternative inference backends, then speculative decoding (#38) which builds on dual-model from Phase 2, causal encoder (#39), NUMA pinning (#40), and finally Granian (#41) which only touches the Dockerfile CMD.
+
+### Key architecture change: _do_transcribe dispatch chain
+By the end of Phase 3, `_do_transcribe()` has a layered dispatch chain at the top:
+1. vLLM check — if `USE_VLLM=true` and engine loaded, delegates to `_do_transcribe_vllm()`
+2. Speculative check — if `USE_SPECULATIVE=true` and fast model loaded, delegates to `_do_transcribe_speculative()`
+3. Standard path — pinned memory, dual model selection, TRT/ONNX encoder monkey-patching, CUDA stream
+
+Each dispatch is mutually exclusive: vLLM replaces the entire inference path, speculative uses both models directly, and the standard path uses the encoder acceleration stack.
+
+### Lesson learned: milestone branch push required
+The previous session merged PRs #72, #70, #67 into milestone/phase-3 locally but didn't push to origin, causing the worktree-based rebase for PR #65 to target the wrong base (main instead of milestone/phase-3 with all three PRs). The fix was to verify `origin/milestone/phase-3` matches the local branch after each merge. Always `git push origin milestone/phase-3` after squash-merging a PR.
+
+### Lesson learned: opt-in via environment variables
+All Phase 3 features are gated by environment variables (USE_VLLM, USE_SPECULATIVE, USE_CAUSAL_ENCODER, TRT_ENCODER_PATH, NUMA_NODE, USE_GRANIAN, GATEWAY_MODE). This pattern kept the default behavior unchanged and avoided breaking changes. Each feature can be independently enabled for testing.
