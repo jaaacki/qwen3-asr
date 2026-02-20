@@ -356,3 +356,23 @@ def test_fast_model_global():
     """Verify _fast_model global is defined."""
     from server import _fast_model
     assert _fast_model is None  # not loaded without USE_SPECULATIVE
+
+# ─── Issue #39: Cache-aware streaming encoder with causal attention ───
+# Change: EXPERIMENTAL causal encoder patch via USE_CAUSAL_ENCODER=true.
+#         Patches encoder attention modules to is_causal=True for incremental encoding.
+#         Also adds _encoder_state_cache dict for future incremental streaming.
+# Verify:
+#   USE_CAUSAL_ENCODER=true docker compose up -d --build
+#   docker compose logs | grep "Causal encoder"
+# Expected: "Causal encoder patch applied (EXPERIMENTAL)" or "no patchable modules"
+
+
+def test_patch_encoder_causal_exists():
+    """Verify causal encoder patch function exists."""
+    from server import _patch_encoder_causal
+    assert callable(_patch_encoder_causal)
+
+def test_encoder_state_cache_exists():
+    """Verify encoder state cache dict is defined."""
+    from server import _encoder_state_cache
+    assert isinstance(_encoder_state_cache, dict)
