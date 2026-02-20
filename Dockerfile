@@ -29,6 +29,7 @@ RUN pip install --no-cache-dir \
     onnxruntime-gpu \
     aiohttp \
     psutil \
+    granian \
     # vllm \  # Uncomment for USE_VLLM=true support (large dependency)
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 
@@ -48,5 +49,5 @@ COPY src/build_trt.py /app/build_trt.py
 
 EXPOSE 8000
 
-# GATEWAY_MODE=true: run gateway+worker split; default: monolithic server
-CMD ["sh", "-c", "if [ \"$GATEWAY_MODE\" = 'true' ]; then uvicorn gateway:app --host 0.0.0.0 --port 8000; else uvicorn server:app --host 0.0.0.0 --port 8000 --ws websockets; fi"]
+# GATEWAY_MODE=true: run gateway+worker split; USE_GRANIAN=true: Rust-based ASGI server
+CMD ["sh", "-c", "if [ \"$GATEWAY_MODE\" = 'true' ]; then uvicorn gateway:app --host 0.0.0.0 --port 8000; elif [ \"$USE_GRANIAN\" = 'true' ]; then granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 server:app; else uvicorn server:app --host 0.0.0.0 --port 8000 --ws websockets; fi"]
