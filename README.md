@@ -1,19 +1,42 @@
 # Qwen3-ASR Docker Server
 
-A Dockerized REST API server for [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) (Automatic Speech Recognition) with GPU acceleration.
+A Dockerized REST API server for [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) (Automatic Speech Recognition) with GPU acceleration and OpenAI-compatible endpoints.
 
-Wraps the Qwen3-ASR-0.6B model in a FastAPI server with an OpenAI-compatible transcription endpoint.
+Wraps Qwen3-ASR-1.7B in a production-ready FastAPI server with real-time WebSocket transcription, priority scheduling, and opt-in hardware acceleration.
 
 ## Features
 
-- OpenAI-compatible `/v1/audio/transcriptions` endpoint
+### Core
+- OpenAI-compatible `/v1/audio/transcriptions` endpoint (WAV, MP3, FLAC, …)
 - Server-Sent Events streaming via `/v1/audio/transcriptions/stream`
-- **Real-time WebSocket transcription** via `/ws/transcribe` with overlap and silence padding
+- Real-time WebSocket transcription via `/ws/transcribe` with overlap and silence padding
 - Multi-language support with auto-detection
-- Optional timestamp output
-- GPU-accelerated inference (NVIDIA CUDA)
-- On-demand model loading with idle auto-unload
-- HuggingFace model caching via volume mount
+- On-demand model loading with idle auto-unload (0 VRAM when idle)
+
+### Performance (v0.6.0)
+- **Priority scheduling** — WS requests (priority 0) preempt HTTP uploads via min-heap queue
+- **Silero VAD gating** — silent frames skipped, GPU never invoked for silence
+- **Long audio chunking** — files >25s split at silence boundaries for progressive SSE output
+- **Dual-model strategy** — 0.6B for WS partials, 1.7B for final transcription (`DUAL_MODEL=true`)
+- **KV-cache reuse** across WebSocket chunks
+- **Flash Attention 2** with graceful SDPA fallback
+- **torch.compile** inference with reduce-overhead mode
+- **Pinned memory + CUDA stream** — async DMA pipeline for transfer/compute overlap
+
+### Quantization & Hardware Acceleration (opt-in)
+- **INT8 W8A8** via bitsandbytes (`QUANTIZE=int8`) — ~50% VRAM reduction
+- **FP8** via torchao (`QUANTIZE=fp8`) — requires sm_89+ (Hopper/Ada Lovelace)
+- **ONNX Runtime encoder** (`ONNX_ENCODER_PATH`) — ORT-accelerated encoder with CUDA EP
+- **TensorRT encoder** (`TRT_ENCODER_PATH`) — compiled TRT engine for encoder forward pass
+- **CUDA Graphs warming** (`USE_CUDA_GRAPHS=true`) — 3 extra warmup passes for kernel caching
+- **Speculative decoding** (`USE_SPECULATIVE=true`) — 0.6B draft + 1.7B verifier (~2x speed)
+- **vLLM backend** (`USE_VLLM=true`) — PagedAttention serving engine
+- **Causal attention encoder** (`USE_CAUSAL_ENCODER=true`) — EXPERIMENTAL incremental encoding
+
+### Infrastructure (opt-in)
+- **Gateway + Worker mode** (`GATEWAY_MODE=true`) — splits into proxy + model worker; kill worker to reclaim all VRAM
+- **NUMA-aware CPU pinning** (`NUMA_NODE=0`) — pins to GPU-collocated NUMA node
+- **Granian ASGI** (`USE_GRANIAN=true`) — Rust-based alternative to uvicorn
 
 ## Quick Start
 
@@ -27,101 +50,104 @@ curl http://localhost:8100/health
 # Transcribe audio file
 curl -X POST http://localhost:8100/v1/audio/transcriptions \
   -F "file=@audio.wav"
+
+# Streaming transcription (SSE)
+curl -X POST http://localhost:8100/v1/audio/transcriptions/stream \
+  -F "file=@audio.wav" -N
 ```
 
-For WebSocket real-time transcription, see [WEBSOCKET_USAGE.md](WEBSOCKET_USAGE.md).
+For WebSocket real-time transcription, see [docs/WEBSOCKET_USAGE.md](docs/WEBSOCKET_USAGE.md).
 
 ## Requirements
 
 - Docker with NVIDIA GPU support (`nvidia-docker2` or Docker 19.03+)
 - NVIDIA GPU with CUDA 12.4 compatible driver
-- ~2GB disk for model download (cached in `./models/`)
+- ~4GB disk for model download (cached in `./models/`)
 
 ## API Endpoints
 
 ### `GET /health`
 
-Returns server status, model info, and CUDA availability.
+Returns server status, model info, and GPU memory.
 
 ```json
 {
   "status": "ok",
   "model_loaded": true,
-  "model_id": "Qwen/Qwen3-ASR-0.6B",
+  "model_id": "Qwen/Qwen3-ASR-1.7B",
   "cuda": true
 }
 ```
 
 ### `POST /v1/audio/transcriptions`
 
-Transcribe an audio file. Accepts WAV, MP3, FLAC, and other formats supported by soundfile.
+Transcribe an audio file.
 
-**Parameters** (multipart form):
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `file` | file | required | Audio file to transcribe |
-| `language` | string | `"auto"` | Language code or `"auto"` for detection |
-| `return_timestamps` | bool | `false` | Include word-level timestamps |
-
-**Example:**
+| `file` | file | required | Audio file (WAV, MP3, FLAC, …) |
+| `language` | string | `"auto"` | Language code or `"auto"` |
+| `return_timestamps` | bool | `false` | Word-level timestamps |
 
 ```bash
-# Basic transcription
-curl -X POST http://localhost:8100/v1/audio/transcriptions \
-  -F "file=@recording.wav"
-
-# With language hint and timestamps
 curl -X POST http://localhost:8100/v1/audio/transcriptions \
   -F "file=@recording.wav" \
   -F "language=en" \
   -F "return_timestamps=true"
 ```
 
-**Response:**
-
-```json
-{
-  "text": "Hello, how are you today?",
-  "language": "en"
-}
-```
-
 ### `POST /v1/audio/transcriptions/stream`
 
-Streaming transcription via Server-Sent Events. Same parameters as above.
-
-```bash
-curl -X POST http://localhost:8100/v1/audio/transcriptions/stream \
-  -F "file=@recording.wav" \
-  -N
-```
+Same parameters, returns chunked SSE stream. Long audio (>25s) is split at silence boundaries for progressive output.
 
 ### `WS /ws/transcribe`
 
-Real-time WebSocket transcription. See [WEBSOCKET_USAGE.md](WEBSOCKET_USAGE.md) for details.
+Real-time WebSocket transcription. See [docs/WEBSOCKET_USAGE.md](docs/WEBSOCKET_USAGE.md).
 
 ## Configuration
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `MODEL_ID` | `Qwen/Qwen3-ASR-0.6B` | HuggingFace model ID |
-| `IDLE_TIMEOUT` | `120` | Seconds before unloading model from GPU (0 = disabled) |
-| `REQUEST_TIMEOUT` | `300` | Maximum seconds per inference request |
-| `WS_BUFFER_SIZE` | `25600` | WebSocket buffer size in bytes (~800ms at 16kHz) |
-| `WS_OVERLAP_SIZE` | `9600` | Overlap bytes between chunks (~300ms at 16kHz) |
-| `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush/disconnect (ms) |
+### Core
 
-### GPU Memory Management
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODEL_ID` | `Qwen/Qwen3-ASR-1.7B` | HuggingFace model ID |
+| `IDLE_TIMEOUT` | `120` | Seconds before unloading model (0 = keep loaded) |
+| `REQUEST_TIMEOUT` | `300` | Max seconds per inference request |
+| `WS_BUFFER_SIZE` | `14400` | WebSocket buffer bytes (~450ms at 16kHz) |
+| `WS_OVERLAP_SIZE` | `4800` | Overlap bytes between chunks (~150ms) |
+| `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush (ms) |
 
-The model loads **on-demand** with the first request and automatically **unloads after idle timeout** to free VRAM for other services. This is ideal for shared GPU environments.
+### Performance
 
-- Cold start (first request): ~19s to load model
-- Warm requests: ~1.3s for 20s audio
-- Idle VRAM usage: 0 MB (model unloaded)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DUAL_MODEL` | `false` | Load 0.6B for WS partials alongside main model |
+| `FAST_MODEL_ID` | `Qwen/Qwen3-ASR-0.6B` | Draft/partial model ID |
+| `QUANTIZE` | `""` | `int8` or `fp8` quantization |
+| `USE_CUDA_GRAPHS` | `false` | Extra warmup passes for CUDA kernel caching |
+| `ONNX_ENCODER_PATH` | `""` | Path to exported ONNX encoder |
+| `TRT_ENCODER_PATH` | `""` | Path to compiled TRT engine |
+| `USE_SPECULATIVE` | `false` | Speculative decoding (0.6B draft + 1.7B verifier) |
+| `USE_VLLM` | `false` | Use vLLM engine (requires vllm package) |
+| `USE_CAUSAL_ENCODER` | `false` | EXPERIMENTAL causal attention patching |
 
-## Port Mapping
+### Infrastructure
 
-The container runs on port 8000 internally, mapped to **8100** on the host (configurable in `compose.yaml`).
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_MODE` | `false` | Run as gateway proxy (requires worker on port 8001) |
+| `NUMA_NODE` | `0` | NUMA node for CPU affinity (0 = first half of CPUs) |
+| `USE_GRANIAN` | `false` | Use Granian ASGI instead of uvicorn |
+
+## Optional Tools
+
+```bash
+# Export encoder to ONNX (then set ONNX_ENCODER_PATH)
+python src/export_onnx.py --output models/encoder.onnx
+
+# Build TensorRT engine (then set TRT_ENCODER_PATH)
+python src/build_trt.py --output models/encoder.trt
+```
 
 ## Project Structure
 
@@ -129,11 +155,20 @@ The container runs on port 8000 internally, mapped to **8100** on the host (conf
 qwen3-asr/
 ├── compose.yaml          # Docker Compose configuration
 ├── Dockerfile            # Container build definition
-├── server.py             # FastAPI server
+├── src/
+│   ├── server.py         # FastAPI server (~900 lines)
+│   ├── gateway.py        # Gateway proxy (GATEWAY_MODE=true)
+│   ├── worker.py         # Inference worker subprocess
+│   ├── export_onnx.py    # Export encoder to ONNX Runtime
+│   ├── build_trt.py      # Build TensorRT encoder engine
+│   └── server_test.py    # Manual test notes
+├── docs/
+│   ├── WEBSOCKET_USAGE.md
+│   └── GRANIAN_BENCHMARK.md
 ├── models/               # HuggingFace model cache (auto-populated)
 ├── CHANGELOG.md
-├── WEBSOCKET_USAGE.md    # WebSocket endpoint documentation
-└── README.md
+├── ROADMAP.md
+└── LEARNING_LOG.md
 ```
 
 ## License
