@@ -135,7 +135,7 @@ def _load_model_sync():
     if model is not None:
         return
 
-    model_id = os.getenv("MODEL_ID", "Qwen/Qwen3-ASR-0.6B")
+    model_id = os.getenv("MODEL_ID", "Qwen/Qwen3-ASR-1.7B")
     loaded_model_id = model_id
 
     print(f"Loading {model_id}...")
