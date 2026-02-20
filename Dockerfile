@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir \
     silero-vad \
     bitsandbytes \
     onnxruntime-gpu \
+    aiohttp \
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 
 # torchao for FP8 quantization (opt-in via QUANTIZE=fp8)
@@ -36,7 +37,10 @@ RUN pip install --no-cache-dir torchao
 RUN pip install --no-cache-dir flash-attn --no-build-isolation
 
 COPY src/server.py /app/server.py
+COPY src/gateway.py /app/gateway.py
+COPY src/worker.py /app/worker.py
 
 EXPOSE 8000
 
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "websockets"]
+# GATEWAY_MODE=true: run gateway+worker split; default: monolithic server
+CMD ["sh", "-c", "if [ \"$GATEWAY_MODE\" = 'true' ]; then uvicorn gateway:app --host 0.0.0.0 --port 8000; else uvicorn server:app --host 0.0.0.0 --port 8000 --ws websockets; fi"]
