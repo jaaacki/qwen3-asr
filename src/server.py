@@ -25,8 +25,6 @@ def _get_attn_implementation() -> str:
 
 _ATTN_IMPL = _get_attn_implementation()
 
-app = FastAPI(title="Qwen3-ASR API")
-
 model = None
 processor = None
 loaded_model_id = None
@@ -251,7 +249,15 @@ async def _idle_watchdog():
                     await asyncio.get_event_loop().run_in_executor(_infer_executor, _unload_model_sync)
 
 
-### NOTE: startup/shutdown handled via lifespan context manager (see app = FastAPI(..., lifespan=lifespan))
+@asynccontextmanager
+async def lifespan(the_app):
+    """ASGI lifespan handler — compatible with both uvicorn and granian."""
+    asyncio.create_task(_idle_watchdog())
+    yield
+    _infer_executor.shutdown(wait=False)
+
+
+app = FastAPI(title="Qwen3-ASR API", lifespan=lifespan)
 
 
 @app.get("/health")
