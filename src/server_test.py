@@ -80,3 +80,13 @@
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 #   # Both HTTP and WS should produce correct transcriptions
 # Expected: faster WS transcription (skips redundant mono/resample/cast), same quality
+
+# ─── Issue #20: Disable WebSocket per-message-deflate compression ──────────
+# Change: Added --ws websockets to uvicorn CMD in Dockerfile.
+#         The websockets backend has no per-message compression by default.
+#         Added comment in server.py near websocket.accept() for documentation.
+# Verify:
+#   docker compose up -d --build
+#   # Use WebSocket client from docs/WEBSOCKET_USAGE.md to stream audio
+#   # Verify WS connection works and transcription is correct
+# Expected: ~1ms CPU savings per WS frame, same functionality
