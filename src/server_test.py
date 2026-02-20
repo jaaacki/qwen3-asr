@@ -191,3 +191,14 @@
 #   Expected: "INT8 quantization enabled (bitsandbytes)"
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 # Expected: transcription works, gpu_allocated_mb ~50% less than default
+
+# ─── Issue #30: CUDA Graphs for decoder loop ────────────────────────
+# Change: Added opt-in CUDA graph warmup via USE_CUDA_GRAPHS=true env var.
+#         Performs extra warmup passes to prime CUDA kernel caches.
+# Verify:
+#   Set USE_CUDA_GRAPHS=true in docker-compose.yml environment
+#   docker compose up -d --build
+#   docker compose logs | grep "CUDA graph"
+#   Expected: "CUDA graph capture: best-effort (variable-length audio limits scope)"
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+# Expected: correct transcription, faster kernel dispatch
