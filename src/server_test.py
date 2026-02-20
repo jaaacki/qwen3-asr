@@ -214,3 +214,12 @@
 #   docker compose logs | grep "ONNX"
 #   Expected: "ONNX encoder loaded from models/encoder.onnx"
 # Without env var: server starts normally, no ONNX loading
+
+# ─── Issue #32: KV-cache reuse across WebSocket chunks ──────────────
+# Change: Store encoder output from previous WS chunk and pass it to
+#         subsequent chunks. Reduces re-computation for repeated audio.
+# Verify:
+#   docker compose up -d --build
+#   # Connect via WS, send multiple audio chunks, verify transcription
+#   # Send {"action": "reset"} to clear cache between sessions
+# Expected: faster subsequent WS chunks, same transcription quality
