@@ -24,3 +24,15 @@
 #   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 #   # Time multiple requests — second+ requests should be measurably faster
 # Expected: Faster inference on repeated same-size audio inputs. No functional change.
+
+# ─── Issue #11: TF32 matmul precision ───────────────────────────────────────
+# Change: Added torch.backends.cuda.matmul.allow_tf32 = True and
+#         torch.backends.cudnn.allow_tf32 = True in _load_model_sync().
+#         TF32 gives ~3x matmul throughput on Ampere+ GPUs with negligible
+#         accuracy loss for ASR workloads.
+# Verify:
+#   docker compose up -d --build
+#   curl http://localhost:8100/health
+#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
+#   # Compare transcription quality — should be identical or near-identical
+# Expected: Faster inference with no meaningful accuracy degradation.
