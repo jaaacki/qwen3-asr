@@ -62,6 +62,13 @@ Issues ordered by dependency:
 - [ ] #85 [Docs] Expose and document FastAPI Swagger UI
 - [ ] #86 [Enhancement] Add `/v1/audio/translations` endpoint
 
+## Phase 6 — Observability & Error Tracking → v0.9.0
+_The system adopts Loguru for structured logging across all processes to enhance debugging and observability._
+
+Issues ordered by dependency:
+- [ ] #87 [Enhancement] Integrate Loguru for unified structured logging
+- [ ] #88 [Enhancement] Intercept FastAPI & Uvicorn logs into Loguru
+
 ## Backlog
 _Unplaced items or future considerations._
 - Retire whisper-engine container (Qwen3-ASR-1.7B matches/beats Whisper large-v3)
