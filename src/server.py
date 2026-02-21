@@ -1,8 +1,7 @@
+from __future__ import annotations
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
-import torch
-import soundfile as sf
 import io
 import os
 import gc
@@ -14,17 +13,6 @@ import time
 import heapq
 import dataclasses
 import numpy as np
-from qwen_asr import Qwen3ASRModel, parse_asr_output
-
-def _get_attn_implementation() -> str:
-    """Select best available attention implementation."""
-    try:
-        import flash_attn  # noqa: F401
-        return "flash_attention_2"
-    except ImportError:
-        return "sdpa"
-
-_ATTN_IMPL = _get_attn_implementation()
 
 model = None
 _fast_model = None
@@ -168,6 +156,7 @@ def _load_vllm_engine(model_id: str):
 
 def release_gpu_memory():
     """Force release of unused GPU memory back to the system."""
+    import torch
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -225,6 +214,7 @@ def is_speech(audio_float32: np.ndarray, threshold: float = 0.5) -> bool:
     if _vad_model is None:
         return True  # fallback: assume speech if VAD not available
     try:
+        import torch
         tensor = torch.from_numpy(audio_float32).unsqueeze(0)
         with torch.no_grad():
             confidence = _vad_model(tensor, 16000).item()
@@ -244,6 +234,7 @@ def _try_load_trt_encoder():
     if not trt_path or not os.path.exists(trt_path):
         return
     try:
+        import torch
         _trt_encoder = torch.jit.load(trt_path)
         print(f"TensorRT encoder loaded from {trt_path}")
     except Exception as e:
@@ -308,6 +299,9 @@ def _set_cpu_affinity():
 
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
+    import torch
+    from qwen_asr import Qwen3ASRModel
+
     global model, loaded_model_id, _last_used, _fast_model
 
     if model is not None:
@@ -331,6 +325,13 @@ def _load_model_sync():
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
+    # Select best available attention implementation
+    try:
+        import flash_attn  # noqa: F401
+        attn_impl = "flash_attention_2"
+    except ImportError:
+        attn_impl = "sdpa"
+
     quantize_mode = os.getenv("QUANTIZE", "").lower()
 
     load_kwargs = dict(
@@ -338,9 +339,9 @@ def _load_model_sync():
         device_map="cuda" if torch.cuda.is_available() else "cpu",
         trust_remote_code=True,
         low_cpu_mem_usage=True,
-        attn_implementation=_ATTN_IMPL,
+        attn_implementation=attn_impl,
     )
-    print(f"Attention implementation: {_ATTN_IMPL}")
+    print(f"Attention implementation: {attn_impl}")
 
     if quantize_mode == "int8" and torch.cuda.is_available():
         try:
@@ -459,6 +460,7 @@ def _try_build_cuda_graph():
     that CUDA JIT-compiles and caches the kernels used by the decoder,
     reducing latency on the first real request.
     """
+    import torch
     if not torch.cuda.is_available():
         return
     if os.getenv("USE_CUDA_GRAPHS", "").lower() != "true":
@@ -492,6 +494,7 @@ def _try_load_onnx_encoder():
 
 def _unload_model_sync():
     """Unload model from GPU to free VRAM."""
+    import torch
     global model, _fast_model
 
     if model is None:
@@ -551,6 +554,7 @@ app = FastAPI(title="Qwen3-ASR API", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
+    import torch
     gpu_info = {}
     if torch.cuda.is_available():
         gpu_info = {
@@ -576,6 +580,7 @@ async def transcribe(
     await _ensure_model_loaded()
 
     audio_bytes = await file.read()
+    import soundfile as sf
     audio, sr = sf.read(io.BytesIO(audio_bytes))
 
     lang_code = None if language == "auto" else language
@@ -618,6 +623,7 @@ def _do_transcribe_speculative(audio, sr, lang_code, return_timestamps):
     Speculative decoding: draft with 0.6B, verify with 1.7B.
     Falls back to standard inference if dual models not loaded.
     """
+    import torch
     if _fast_model is None or model is None:
         return _do_transcribe(audio, sr, lang_code, return_timestamps)
 
@@ -640,6 +646,7 @@ def _do_transcribe_speculative(audio, sr, lang_code, return_timestamps):
 
 def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
     """Run inference in a thread pool, using ONNX encoder if available."""
+    import torch
     if USE_VLLM and _vllm_engine is not None:
         return _do_transcribe_vllm(audio, sr, lang_code, return_timestamps)
 
@@ -802,6 +809,7 @@ async def transcribe_stream(
     await _ensure_model_loaded()
 
     audio_bytes = await file.read()
+    import soundfile as sf
     audio, sr = sf.read(io.BytesIO(audio_bytes))
 
     lang_code = None if language == "auto" else language
