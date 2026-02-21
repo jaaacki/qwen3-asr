@@ -450,8 +450,18 @@ def _load_model_sync():
         low_cpu_mem_usage=True,
         attn_implementation=_ATTN_IMPL,
     )
-    model.eval()
     print(f"Attention implementation: {_ATTN_IMPL}")
+
+    if quantize_mode == "int8" and torch.cuda.is_available():
+        try:
+            from transformers import BitsAndBytesConfig
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            load_kwargs["torch_dtype"] = torch.float16  # required for bitsandbytes
+            print("INT8 quantization enabled (bitsandbytes)")
+        except ImportError:
+            print("bitsandbytes not available, using default precision")
+
+    model = Qwen3ASRModel.from_pretrained(model_id, **load_kwargs)
 
     # FP8 post-training quantization (opt-in via QUANTIZE=fp8, requires sm_89+)
     quantize_mode = os.getenv("QUANTIZE", "").lower()
@@ -475,17 +485,6 @@ def _load_model_sync():
             print("torch.compile enabled (mode=reduce-overhead)")
         except Exception as e:
             print(f"torch.compile unavailable ({e}), using eager mode")
-
-    if quantize_mode == "int8" and torch.cuda.is_available():
-        try:
-            from transformers import BitsAndBytesConfig
-            load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
-            load_kwargs["torch_dtype"] = torch.float16  # required for bitsandbytes
-            print("INT8 quantization enabled (bitsandbytes)")
-        except ImportError:
-            print("bitsandbytes not available, using default precision")
-
-    model = Qwen3ASRModel.from_pretrained(model_id, **load_kwargs)
 
     # Load fast (draft) model for speculative decoding
     if USE_SPECULATIVE:
