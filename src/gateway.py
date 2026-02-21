@@ -243,4 +243,16 @@ async def websocket_proxy(websocket: WebSocket):
 @app.get("/health")
 async def health():
     worker_alive = _worker_proc is not None and _worker_proc.poll() is None
-    return {"status": "ok", "mode": "gateway", "worker_alive": worker_alive}
+    info = {"status": "ok", "mode": "gateway", "worker_alive": worker_alive, "model_loaded": False, "model_id": None}
+    if worker_alive:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://{WORKER_HOST}:{WORKER_PORT}/health",
+                    timeout=aiohttp.ClientTimeout(total=3),
+                ) as resp:
+                    if resp.status == 200:
+                        info.update(await resp.json())
+        except Exception:
+            pass
+    return info

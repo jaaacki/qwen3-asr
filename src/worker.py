@@ -174,4 +174,9 @@ async def websocket_transcribe(websocket: WebSocket):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "mode": "worker", "model_loaded": _srv.model is not None}
+    return {
+        "status": "ok",
+        "mode": "worker",
+        "model_loaded": _srv.model is not None,
+        "model_id": _srv.loaded_model_id,
+    }
