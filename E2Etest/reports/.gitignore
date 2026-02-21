@@ -1,3 +1,1 @@
-# Ignore generated test reports
-*.md
-!.gitignore
+# Keep this directory tracked
