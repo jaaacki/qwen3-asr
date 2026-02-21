@@ -15,7 +15,6 @@ import heapq
 import dataclasses
 import numpy as np
 from qwen_asr import Qwen3ASRModel, parse_asr_output
-from qwen_asr.inference.qwen3_asr import AutoProcessor
 
 def _get_attn_implementation() -> str:
     """Select best available attention implementation."""
@@ -29,7 +28,6 @@ _ATTN_IMPL = _get_attn_implementation()
 
 model = None
 _fast_model = None
-processor = None
 loaded_model_id = None
 
 # Dedicated single-threaded executor for GPU inference
@@ -310,7 +308,7 @@ def _set_cpu_affinity():
 
 def _load_model_sync():
     """Load model into GPU (blocking). Called from async context via lock."""
-    global model, processor, loaded_model_id, _last_used, _fast_model
+    global model, loaded_model_id, _last_used, _fast_model
 
     if model is not None:
         return
@@ -332,8 +330,6 @@ def _load_model_sync():
         torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-
-    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
     quantize_mode = os.getenv("QUANTIZE", "").lower()
 
@@ -496,7 +492,7 @@ def _try_load_onnx_encoder():
 
 def _unload_model_sync():
     """Unload model from GPU to free VRAM."""
-    global model, processor, _fast_model
+    global model, _fast_model
 
     if model is None:
         return
@@ -506,9 +502,7 @@ def _unload_model_sync():
         del _fast_model
         _fast_model = None
     del model
-    del processor
     model = None
-    processor = None
     release_gpu_memory()
 
     if torch.cuda.is_available():
