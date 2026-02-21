@@ -104,14 +104,64 @@ async def _proxy_transcribe(audio_bytes: bytes, language: str, return_timestamps
             return await resp.json()
 
 
-@app.post("/v1/audio/transcriptions")
+from schemas import HealthResponse, TranscriptionResponse, TranslationResponse
+
+@app.post(
+    "/v1/audio/transcriptions",
+    response_model=TranscriptionResponse,
+    summary="Transcribe Audio",
+    description="Upload an audio file to transcribe its speech into text."
+)
 async def transcribe(
-    file: UploadFile = File(...),
-    language: str = Form("auto"),
-    return_timestamps: bool = Form(False),
+    file: UploadFile = File(..., description="The audio file to transcribe"),
+    language: str = Form("auto", description="The language code (e.g. 'en', 'zh'). 'auto' detects automatically."),
+    return_timestamps: bool = Form(False, description="Whether to include word-level timestamps in the response text"),
 ):
     audio_bytes = await file.read()
     return await _proxy_transcribe(audio_bytes, language, return_timestamps)
+
+
+@app.post(
+    "/v1/audio/translations",
+    # Cannot strictly bound response_model to TranslationResponse if it returns SRT plain text, so omitted for raw text
+    summary="Translate Audio",
+    description="Transcribe and translate an audio file into English ('en') or Chinese ('zh'). Supports returning 'json' or 'srt'."
+)
+async def translate(
+    file: UploadFile = File(..., description="The audio file to translate"),
+    language: str = Form("en", description="The target language code for translation ('en' or 'zh')."),
+    response_format: str = Form("json", description="The format of the response ('json' or 'srt').")
+):
+    """Proxy translation request to worker."""
+    from fastapi.responses import Response
+    global _last_used
+    await _ensure_worker()
+    
+    # Restrict to en/zh only
+    target_lang = "en" if language.lower() not in ["en", "zh"] else language.lower()
+    
+    url = f"http://{WORKER_HOST}:{WORKER_PORT}/translate"
+    form = aiohttp.FormData()
+    form.add_field("file", await file.read(), filename="audio.wav", content_type="audio/wav")
+    form.add_field("language", target_lang)
+    form.add_field("response_format", response_format)
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
+            _last_used = time.time()
+            if resp.status != 200:
+                body = await resp.text()
+                return JSONResponse(status_code=resp.status, content={"error": body})
+            
+            if response_format.lower() == "srt":
+                srt_content = await resp.text()
+                return Response(
+                    content=srt_content,
+                    media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="translated_subtitles.srt"'},
+                )
+            else:
+                return await resp.json()
 
 
 @app.post("/v1/audio/subtitles")

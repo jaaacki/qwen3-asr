@@ -59,8 +59,8 @@ _The system generates SRT subtitle files with word-level timestamp accuracy via 
 _The system supports translation to English and Chinese with a fully documented Swagger UI._
 
 Issues ordered by dependency:
-- [ ] #85 [Docs] Expose and document FastAPI Swagger UI
-- [ ] #86 [Enhancement] Add `/v1/audio/translations` endpoint
+- [x] #85 [Docs] Expose and document FastAPI Swagger UI
+- [x] #86 [Enhancement] Add `/v1/audio/translations` endpoint
 
 ## Phase 6 — Observability & Error Tracking → v0.9.0
 _The system adopts Loguru for structured logging across all processes to enhance debugging and observability._

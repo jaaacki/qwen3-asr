@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.0 — 2026-02-22
+
+### Added
+- **Swagger UI Documentation** — exposed at `/docs` with detailed Pydantic schemas for improved interactive testing and API spec sharing (#85)
+- **Audio Translation Endpoint** — new `POST /v1/audio/translations` and internal worker `/translate` endpoint using OpenAI-compatible APIs (like Ollama or vLLM) for translation (#86)
+  - Supports English (`en`) and Chinese (`zh`) target translations.
+  - Supports `response_format` for `json` (raw text) or `srt` (translates full subtitle file while strictly preserving timestamps).
+  - Designed as an isolated `src/translator.py` module to maintain separation of concerns without altering upstream inference hot-paths.
+
 ## v0.6.2 — 2026-02-21
 
 ### Added

@@ -4,6 +4,24 @@ Running narrative of decisions, patterns, and lessons.
 
 ---
 
+## 2026-02-22 — Why this design: Isolated Translation Module (Issue #86)
+
+**Type**: Why this design
+**Related**: Issue #86, v0.8.0
+
+### Context
+Users requested the ASR model to automatically translate audio text into English or Chinese directly via the API. The `Qwen3ASRModel` is phenomenal at transcription but we recognized that shoehorning translation directly via pipeline parameters or hacking inference kwargs wouldn't scale well and could destabilize the finely-tuned ASR hot-path. 
+
+### Decision: Dedicated `src/translator.py` wrapper using external APIs
+Instead of loading an additional multi-gigabyte local LLM explicitly for translation or mutating the ASR model's internals, we implemented an isolated Python module `src/translator.py`.
+1. **Separation of Concerns** — The primary endpoints naturally run `_do_transcribe()` exactly as before with zero structural changes. The returned text/SRT is then subsequently passed into standard translation logic asynchronously.
+2. **Standard Interfaces** — Using the `openai` python library ensures we can connect the translation pipeline to any OpenAI-compatible backend, such as a local lightweight `Ollama` instance or a powerful external `vLLM` server, entirely controlled via external `OPENAI_API_KEY` and `OPENAI_BASE_URL` environment variables.
+3. **Dual Formats (JSON & SRT)** — The endpoint was structured so users can supply `response_format=srt`. When enabled, the transcription pipeline runs in *accurate* subtitle mode first, translates the raw `SRT` format while strictly maintaining indices and timing tags via an LLM instruction prompt, and returns a perfectly encoded translated SRT file.
+
+### What could go wrong
+- **LLM Prompt Misfires (SRT)**: Language models are notoriously tricky at rigidly following formats. If the `TRANSLATE_MODEL` decides to output markdown formatting (e.g., ` ```srt `) or alters timestamp lines ("00:00:01,000" -> "00:00:01.000"), the resulting SRT will be malformed. We deployed stripping logic for the markdown blocks, but robust SRT integrity validation might be needed later.
+
+---
 ## 2026-02-21 — Why this design: Subtitle generation as separate module (Issue #83)
 
 **Type**: Why this design

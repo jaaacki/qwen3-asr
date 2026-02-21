@@ -143,6 +143,94 @@ async def generate_subtitles(
     )
 
 
+@app.post("/translate")
+async def translate(
+    file: UploadFile = File(...),
+    language: str = Form("en"),
+    response_format: str = Form("json"),
+):
+    from fastapi.responses import Response
+    from translator import translate_text, translate_srt
+
+    await _ensure_model_loaded()
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        return JSONResponse(status_code=400, content={"error": "Empty audio file"})
+
+    import soundfile as sf
+    try:
+        audio, sr = sf.read(io.BytesIO(audio_bytes))
+    except Exception as e:
+        return JSONResponse(status_code=422, content={"error": f"Could not decode audio: {e}"})
+
+    target_lang = "en" if language.lower() not in ["en", "zh"] else language.lower()
+
+    if response_format.lower() == "srt":
+        from subtitle import load_aligner
+        # Lazy load aligner for accurate timing mode
+        await asyncio.get_event_loop().run_in_executor(_srv._infer_executor, load_aligner)
+
+        try:
+            results = await asyncio.wait_for(
+                _infer_queue.submit(
+                    lambda: _do_transcribe(audio, sr, None, False),
+                    priority=1,
+                ),
+                timeout=REQUEST_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            release_gpu_memory()
+            return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+
+        if not results:
+            return Response(content="", media_type="text/plain; charset=utf-8")
+
+        for r in results:
+            r.text = detect_and_fix_repetitions(r.text)
+
+        from subtitle import generate_srt_from_results
+        original_srt = await asyncio.get_event_loop().run_in_executor(
+            _srv._infer_executor,
+            lambda: generate_srt_from_results(results, audio, sr, mode="accurate", max_line_chars=42),
+        )
+
+        try:
+            translated_srt = await translate_srt(original_srt, target_lang)
+        except Exception as e:
+            return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
+
+        return Response(content=translated_srt, media_type="text/plain; charset=utf-8")
+
+    else:
+        try:
+            results = await asyncio.wait_for(
+                _infer_queue.submit(
+                    lambda: _do_transcribe(audio, sr, None, False),
+                    priority=1,
+                ),
+                timeout=REQUEST_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            release_gpu_memory()
+            return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+
+        if results and len(results) > 0:
+            text = detect_and_fix_repetitions(results[0].text)
+        else:
+            text = ""
+
+        if text.strip():
+            try:
+                translated_text = await translate_text(text, target_lang)
+            except Exception as e:
+                return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
+        else:
+            translated_text = ""
+
+        return {"text": translated_text, "language": target_lang}
+
+
 @app.post("/transcribe/stream")
 async def transcribe_stream(
     file: UploadFile = File(...),

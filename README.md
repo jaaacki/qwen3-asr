@@ -126,6 +126,36 @@ curl -X POST http://localhost:8100/v1/audio/subtitles \
   -o subtitles.srt
 ```
 
+### `POST /v1/audio/translations`
+
+Translate an audio file into English or Chinese using external LLM APIs (Ollama/vLLM/OpenAI). Returns raw JSON text or full SRT subtitle format. 
+Requires an OpenAI-compatible translation backend running.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `file` | file | required | Audio file (WAV, MP3, FLAC, ...) |
+| `language` | string | `"en"` | Target language: `"en"` or `"zh"` |
+| `response_format` | string | `"json"` | `"json"` (text response) or `"srt"` (maintains timings) |
+
+```bash
+# JSON raw text translation via standard proxy
+export OPENAI_API_KEY="your-key"
+export TRANSLATE_MODEL="gpt-4o-mini"
+curl -X POST http://localhost:8100/v1/audio/translations \
+  -F "file=@recording.wav" \
+  -F "language=zh"
+
+# Full Subtitle SRT Translation 
+curl -X POST http://localhost:8100/v1/audio/translations \
+  -F "file=@recording.wav" \
+  -F "language=en" \
+  -F "response_format=srt" -o translated.srt
+```
+
+### `GET /docs`
+
+Interactive Swagger UI documentation containing all endpoints and strongly-typed request/response Pydantic schemas. Easy testing directly from the browser.
+
 ### `WS /ws/transcribe`
 
 Real-time WebSocket transcription. See [docs/WEBSOCKET_USAGE.md](docs/WEBSOCKET_USAGE.md).
