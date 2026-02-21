@@ -11,6 +11,8 @@ ENV TOKENIZERS_PARALLELISM=false
 # Prevent OpenMP/MKL from spawning CPU threads that compete with GPU inference
 ENV OMP_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
+# Limit torch.compile inductor workers (default 20 spawns ~800MB of subprocesses)
+ENV TORCHINDUCTOR_COMPILE_THREADS=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
