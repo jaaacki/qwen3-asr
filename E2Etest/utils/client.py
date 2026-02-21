@@ -100,6 +100,29 @@ class ASRHTTPClient:
                             pass
             return events
 
+    def subtitle(
+        self,
+        audio_path: Path,
+        language: str = "auto",
+        mode: str = "accurate",
+        max_line_chars: int = 42,
+    ) -> str:
+        """Generate SRT subtitles from audio file."""
+        with open(audio_path, "rb") as f:
+            files = {"file": (audio_path.name, f, "audio/wav")}
+            data = {
+                "language": language,
+                "mode": mode,
+                "max_line_chars": str(max_line_chars),
+            }
+            response = self.client.post(
+                "/v1/audio/subtitles",
+                files=files,
+                data=data,
+            )
+            response.raise_for_status()
+            return response.text
+
     def close(self):
         """Close the HTTP client."""
         self.client.close()

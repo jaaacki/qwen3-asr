@@ -50,6 +50,11 @@ Issues ordered by dependency:
 - [x] #40 NUMA-aware CPU pinning
 - [x] #41 Evaluate Granian as ASGI server replacement
 
+## Phase 4 — Subtitle Generation → v0.7.0
+_The system generates SRT subtitle files with word-level timestamp accuracy via ForcedAligner or lightweight heuristic mode._
+
+- [x] #83 SRT subtitle generation with accurate (ForcedAligner) and fast (heuristic) modes
+
 ## Backlog
 _Unplaced items or future considerations._
 - Retire whisper-engine container (Qwen3-ASR-1.7B matches/beats Whisper large-v3)
