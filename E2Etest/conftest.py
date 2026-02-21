@@ -30,9 +30,7 @@ MODEL_LOAD_TIMEOUT = 120  # seconds to wait for model to load
 # =============================================================================
 
 # Language-specific WER/CER passing thresholds (%).
-# Used in the Accuracy Breakdown report table.
 _ACCURACY_TARGETS: dict[tuple[str, str], float] = {
-    # (language_lower, metric) -> max acceptable %
     ("english", "WER"): 15.0,
     ("chinese", "WER"): 25.0,
     ("japanese", "WER"): 25.0,
@@ -49,34 +47,106 @@ _ACCURACY_TARGETS: dict[tuple[str, str], float] = {
 _DEFAULT_WER_TARGET = 35.0
 _DEFAULT_CER_TARGET = 30.0
 
+# Per-test duration SLA budgets (seconds). Tests exceeding their budget are
+# flagged ⚠️ SLOW in the report even if they pass functionally.
+_DURATION_SLAS: dict[str, float] = {
+    # Health / validation (should be instant)
+    "test_health_returns_200": 2.0,
+    "test_health_has_expected_fields": 2.0,
+    "test_health_status_is_healthy": 2.0,
+    "test_health_gpu_info_when_available": 2.0,
+    "test_empty_file_upload": 2.0,
+    "test_invalid_audio_format": 2.0,
+    "test_missing_file_parameter": 2.0,
+    "test_very_small_audio": 5.0,
+    "test_client_context_manager": 2.0,
+    "test_client_health_includes_model_info": 2.0,
+    "test_empty_file_returns_4xx": 2.0,
+    "test_missing_file_returns_422": 2.0,
+    "test_invalid_mode_returns_4xx": 5.0,
+    # WebSocket connection / commands
+    "test_connect_success": 5.0,
+    "test_connection_info_has_required_fields": 5.0,
+    "test_connection_sample_rate_is_16000": 5.0,
+    "test_connection_format_is_pcm_s16le": 5.0,
+    "test_flush_empty_buffer": 5.0,
+    "test_reset_command": 5.0,
+    "test_config_set_language": 5.0,
+    "test_config_set_auto_language": 5.0,
+    "test_invalid_json_handled": 5.0,
+    "test_unknown_action_handled": 5.0,
+    "test_send_before_connect_fails": 2.0,
+    "test_flush_before_connect_fails": 2.0,
+    "test_invalid_websocket_url": 2.0,
+    # Transcription (includes model load on first call)
+    "test_transcribe_short_audio": 25.0,
+    "test_transcribe_medium_audio": 35.0,
+    "test_transcribe_with_language_param": 25.0,
+    "test_transcribe_returns_timestamps_when_requested": 25.0,
+    "test_client_transcribe_bytes": 25.0,
+    # WebSocket streaming
+    "test_send_audio_chunk": 15.0,
+    "test_flush_with_audio": 15.0,
+    "test_disconnect_transcribes_remaining": 15.0,
+    # Recovery
+    "test_websocket_recovery_after_error": 15.0,
+    "test_http_recovery_after_timeout": 15.0,
+    # Subtitle smoke (fast mode, 5s audio)
+    "test_returns_non_empty_srt": 30.0,
+    "test_timestamp_format": 30.0,
+    "test_start_before_end": 30.0,
+    "test_content_disposition_header": 30.0,
+    "test_with_explicit_language": 30.0,
+    # Subtitle structure (20s / 60s audio)
+    "test_no_overlapping_events": 60.0,
+    "test_max_event_duration": 60.0,
+    "test_sequential_index_numbering": 60.0,
+    "test_chronological_order": 60.0,
+    "test_valid_block_structure": 60.0,
+    "test_line_length_respected": 60.0,
+    "test_multiple_events_long_audio": 90.0,
+}
+_DEFAULT_SLA = 30.0
+
 
 def _accuracy_target(language: str, metric: str) -> float:
-    """Return the passing threshold for (language, metric)."""
     return _ACCURACY_TARGETS.get(
         (language.lower(), metric),
         _DEFAULT_CER_TARGET if metric == "CER" else _DEFAULT_WER_TARGET,
     )
 
 
+def _sla_for(test_name: str) -> float:
+    return _DURATION_SLAS.get(test_name, _DEFAULT_SLA)
+
+
 class MarkdownReportGenerator:
-    """Collects test results and generates a markdown report."""
+    """Collects test results and generates a rich markdown report."""
 
     def __init__(self):
         self.results: list[dict] = []
         self.session_start: float = 0.0
         self.session_end: float = 0.0
-        self.server_info: dict = {}
 
-    def add_result(self, nodeid: str, outcome: str, duration: float, stdout: str = ""):
+    def add_result(
+        self,
+        nodeid: str,
+        outcome: str,
+        duration: float,
+        stdout: str = "",
+        longrepr: str = "",
+        skip_reason: str = "",
+    ):
         self.results.append({
             "nodeid": nodeid,
             "outcome": outcome,
             "duration": duration,
             "stdout": stdout,
+            "longrepr": longrepr,
+            "skip_reason": skip_reason,
         })
 
     def _fetch_server_info(self) -> dict:
-        """Fetch model/GPU info from the health endpoint."""
         try:
             resp = httpx.get(
                 f"{os.getenv('E2E_BASE_URL', DEFAULT_BASE_URL)}/health",
@@ -89,8 +159,6 @@ class MarkdownReportGenerator:
         return {}
 
     def _categorize(self, nodeid: str) -> str:
-        """Derive a category from the test nodeid."""
-        # e.g. test_api_http.py::TestFoo::test_bar -> HTTP API
         fname = nodeid.split("::")[0].rsplit("/", 1)[-1]
         mapping = {
             "test_api_http": "HTTP API",
@@ -106,18 +174,13 @@ class MarkdownReportGenerator:
         return "Other"
 
     def _parse_performance_metrics(self) -> list[dict]:
-        """Extract performance metrics from stdout of performance tests."""
         metrics = []
         for r in self.results:
-            if not r["stdout"]:
+            # Only parse performance test output — avoids false matches from subtitle prints
+            if "test_performance" not in r["nodeid"] or not r["stdout"]:
                 continue
-            # Look for patterns like "Cold start: 45.2s" or timing lines
             for line in r["stdout"].splitlines():
-                # Match "metric_name: Xs" or "metric_name ... Xs"
-                m = re.search(
-                    r"([\w\s]+?):\s*([\d.]+)\s*s(?:econds?)?",
-                    line, re.IGNORECASE,
-                )
+                m = re.search(r"([\w\s]+?):\s*([\d.]+)\s*s(?:econds?)?", line, re.IGNORECASE)
                 if m:
                     metrics.append({
                         "test": r["nodeid"].split("::")[-1],
@@ -127,33 +190,78 @@ class MarkdownReportGenerator:
         return metrics
 
     def _parse_accuracy_metrics(self) -> list[dict]:
-        """Extract accuracy metrics (WER/CER) from stdout of accuracy tests."""
         metrics = []
         for r in self.results:
             if not r["stdout"]:
                 continue
-            lines = r["stdout"].splitlines()
             entry: dict = {"test": r["nodeid"].split("::")[-1], "status": r["outcome"]}
-            for line in lines:
-                lang_m = re.match(r"Language:\s*(.+)", line)
-                if lang_m:
-                    entry["language"] = lang_m.group(1).strip()
-                wer_m = re.match(r"(WER|CER):\s*([\d.]+)%", line)
-                if wer_m:
-                    entry["metric"] = wer_m.group(1)
-                    entry["value"] = float(wer_m.group(2))
-                ref_m = re.match(r"Reference:\s*(.+)", line)
-                if ref_m:
-                    entry["reference"] = ref_m.group(1).strip()
-                hyp_m = re.match(r"Hypothesis:\s*(.+)", line)
-                if hyp_m:
-                    entry["hypothesis"] = hyp_m.group(1).strip()
+            for line in r["stdout"].splitlines():
+                m = re.match(r"Language:\s*(.+)", line)
+                if m:
+                    entry["language"] = m.group(1).strip()
+                m = re.match(r"(WER|CER):\s*([\d.]+)%", line)
+                if m:
+                    entry["metric"] = m.group(1)
+                    entry["value"] = float(m.group(2))
+                m = re.match(r"Reference:\s*(.+)", line)
+                if m:
+                    entry["reference"] = m.group(1).strip()
+                m = re.match(r"Hypothesis:\s*(.+)", line)
+                if m:
+                    entry["hypothesis"] = m.group(1).strip()
             if "language" in entry and "metric" in entry:
                 metrics.append(entry)
         return metrics
 
+    def _parse_transcription_results(self) -> list[dict]:
+        """Extract transcription output printed by transcription tests."""
+        results = []
+        for r in self.results:
+            if not r["stdout"]:
+                continue
+            entry: dict = {"test": r["nodeid"].split("::")[-1], "duration": r["duration"]}
+            for line in r["stdout"].splitlines():
+                m = re.match(r'Audio:\s*(.+)', line)
+                if m:
+                    entry["audio"] = m.group(1).strip()
+                m = re.match(r'Transcription:\s*(.+)', line)
+                if m:
+                    entry["transcription"] = m.group(1).strip()
+                m = re.match(r'Detected:\s*(.+)', line)
+                if m:
+                    entry["detected"] = m.group(1).strip()
+            if "transcription" in entry:
+                results.append(entry)
+        return results
+
+    def _parse_subtitle_results(self) -> list[dict]:
+        """Extract SRT metrics printed by subtitle tests."""
+        results = []
+        for r in self.results:
+            if not r["stdout"]:
+                continue
+            entry: dict = {"test": r["nodeid"].split("::")[-1], "duration": r["duration"]}
+            for line in r["stdout"].splitlines():
+                m = re.match(r'Audio:\s*(.+)', line)
+                if m:
+                    entry["audio"] = m.group(1).strip()
+                m = re.match(r'SRT Events:\s*(\d+)', line)
+                if m:
+                    entry["events"] = int(m.group(1))
+                m = re.match(r'SRT Max Duration:\s*([\d.]+)s', line)
+                if m:
+                    entry["max_duration"] = float(m.group(1))
+                m = re.match(r'SRT Max Line:\s*(\d+)\s*chars', line)
+                if m:
+                    entry["max_line"] = int(m.group(1))
+                m = re.match(r'SRT First:\s*(.+)', line)
+                if m:
+                    entry["first_event"] = m.group(1).strip()
+            if any(k in entry for k in ("events", "first_event", "max_duration")):
+                results.append(entry)
+        return results
+
     def generate(self, output_dir: Path) -> Path:
-        """Write the markdown report and return the file path."""
         output_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         report_path = output_dir / f"{ts}.md"
@@ -161,103 +269,179 @@ class MarkdownReportGenerator:
         info = self._fetch_server_info()
         total_duration = self.session_end - self.session_start
 
-        passed = sum(1 for r in self.results if r["outcome"] == "passed")
-        failed = sum(1 for r in self.results if r["outcome"] == "failed")
+        passed  = sum(1 for r in self.results if r["outcome"] == "passed")
+        failed  = sum(1 for r in self.results if r["outcome"] == "failed")
         skipped = sum(1 for r in self.results if r["outcome"] == "skipped")
         errored = sum(1 for r in self.results if r["outcome"] == "error")
-        total = len(self.results)
+        total   = len(self.results)
+
+        # Duration stats
+        durations = sorted(r["duration"] for r in self.results if r["outcome"] != "skipped")
+        p50 = durations[len(durations) // 2] if durations else 0.0
+        slowest = max(self.results, key=lambda r: r["duration"]) if self.results else None
 
         lines: list[str] = []
         lines.append(f"# E2E Test Report — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-        # --- Summary ---
-        lines.append("## Summary\n")
+        # ── Summary ──────────────────────────────────────────────────────────
+        overall_icon = "✅" if failed == 0 else "❌"
+        lines.append(f"## {overall_icon} Summary\n")
         lines.append("| Metric | Value |")
         lines.append("|--------|-------|")
         lines.append(f"| Total | {total} |")
-        lines.append(f"| Passed | {passed} |")
-        lines.append(f"| Failed | {failed} |")
-        lines.append(f"| Skipped | {skipped} |")
+        lines.append(f"| ✅ Passed | {passed} |")
+        if failed:
+            lines.append(f"| ❌ Failed | {failed} |")
+        if skipped:
+            lines.append(f"| ⏭️ Skipped | {skipped} |")
         if errored:
-            lines.append(f"| Errors | {errored} |")
-        lines.append(f"| Duration | {total_duration:.1f}s |")
+            lines.append(f"| 💥 Errors | {errored} |")
+        lines.append(f"| ⏱️ Total Duration | {total_duration:.1f}s |")
+        lines.append(f"| ⏱️ p50 Duration | {p50:.2f}s |")
+        if slowest:
+            sname = slowest["nodeid"].split("::")[-1]
+            lines.append(f"| 🐢 Slowest | {sname} ({slowest['duration']:.1f}s) |")
         model = info.get("model_id") or info.get("model") or "N/A"
-        lines.append(f"| Model | {model} |")
+        lines.append(f"| 🤖 Model | {model} |")
         gpu = info.get("gpu") or info.get("gpu_name") or "N/A"
-        lines.append(f"| GPU | {gpu} |")
+        lines.append(f"| 🖥️ GPU | {gpu} |")
         lines.append("")
 
-        # --- Performance Metrics ---
+        # ── Failures ─────────────────────────────────────────────────────────
+        failures = [r for r in self.results if r["outcome"] in ("failed", "error")]
+        if failures:
+            lines.append("## ❌ Failures\n")
+            lines.append("| Test | Error |")
+            lines.append("|------|-------|")
+            for r in failures:
+                name = r["nodeid"].split("::")[-1]
+                # Find the actual exception line: "E   SomeError: ..."
+                error_msg = "—"
+                for ln in r["longrepr"].splitlines():
+                    stripped = ln.strip()
+                    if stripped.startswith("E ") and any(
+                        kw in stripped for kw in ("Error", "Exception", "Assert", "Failed")
+                    ):
+                        error_msg = stripped.lstrip("E").strip()[:150]
+                        break
+                if error_msg == "—":
+                    # Fallback: last non-empty line
+                    repr_lines = [l.strip() for l in r["longrepr"].splitlines() if l.strip()]
+                    error_msg = repr_lines[-1][:150] if repr_lines else "—"
+                lines.append(f"| `{name}` | `{error_msg}` |")
+            lines.append("")
+
+        # ── Skipped ──────────────────────────────────────────────────────────
+        skips = [r for r in self.results if r["outcome"] == "skipped"]
+        if skips:
+            lines.append("## ⏭️ Skipped\n")
+            lines.append("| Test | Reason |")
+            lines.append("|------|--------|")
+            for r in skips:
+                name = r["nodeid"].split("::")[-1]
+                reason = r["skip_reason"] or "—"
+                lines.append(f"| `{name}` | {reason} |")
+            lines.append("")
+
+        # ── Transcription Results ─────────────────────────────────────────────
+        txn_results = self._parse_transcription_results()
+        if txn_results:
+            lines.append("## 🎙️ Transcription Results\n")
+            lines.append("| Test | Audio | Transcription | Language | Duration |")
+            lines.append("|------|-------|---------------|----------|----------|")
+            for t in txn_results:
+                name     = t["test"]
+                audio    = t.get("audio", "—")
+                text     = t.get("transcription", "—")[:80]
+                detected = t.get("detected", "—")
+                dur      = f"{t['duration']:.1f}s"
+                lines.append(f"| `{name}` | {audio} | {text} | {detected} | {dur} |")
+            lines.append("")
+
+        # ── Subtitle Results ──────────────────────────────────────────────────
+        sub_results = self._parse_subtitle_results()
+        if sub_results:
+            lines.append("## 📄 Subtitle Results\n")
+            lines.append("| Test | Audio | Events | Max Duration | Max Line | First Event |")
+            lines.append("|------|-------|--------|--------------|----------|-------------|")
+            for s in sub_results:
+                name     = s["test"]
+                audio    = s.get("audio", "—")
+                events   = str(s["events"]) if "events" in s else "—"
+                max_dur  = f"{s['max_duration']:.1f}s" if "max_duration" in s else "—"
+                max_line = f"{s['max_line']} chars" if "max_line" in s else "—"
+                first    = s.get("first_event", "—")[:60]
+                lines.append(f"| `{name}` | {audio} | {events} | {max_dur} | {max_line} | {first} |")
+            lines.append("")
+
+        # ── Accuracy Breakdown ────────────────────────────────────────────────
+        accuracy_metrics = self._parse_accuracy_metrics()
+        if accuracy_metrics:
+            lines.append("## 📊 Accuracy Breakdown\n")
+            lines.append("| Language | Metric | Score | Target | Pass | Reference | Hypothesis |")
+            lines.append("|----------|--------|-------|--------|------|-----------|------------|")
+            for am in accuracy_metrics:
+                lang     = am.get("language", "?")
+                metric   = am.get("metric", "?")
+                value    = am.get("value", 0)
+                target   = _accuracy_target(lang, metric)
+                ok       = value <= target
+                lines.append(
+                    f"| {lang} | {metric} | {value:.1f}% | ≤{target:.0f}% "
+                    f"| {'✅' if ok else '❌'} "
+                    f"| {am.get('reference','')[:80]} | {am.get('hypothesis','')[:80]} |"
+                )
+            lines.append("")
+
+        # ── Performance Metrics ───────────────────────────────────────────────
         perf_metrics = self._parse_performance_metrics()
         if perf_metrics:
-            lines.append("## Performance Metrics\n")
+            lines.append("## ⚡ Performance Metrics\n")
             lines.append("| Test | Metric | Value |")
             lines.append("|------|--------|-------|")
             for pm in perf_metrics:
                 lines.append(f"| {pm['test']} | {pm['metric']} | {pm['value']:.2f}s |")
             lines.append("")
 
-        # --- Accuracy Breakdown ---
-        accuracy_metrics = self._parse_accuracy_metrics()
-        if accuracy_metrics:
-            lines.append("## Accuracy Breakdown\n")
-            lines.append("| Language | Metric | Score | Target | Pass | Reference | Hypothesis |")
-            lines.append("|----------|--------|-------|--------|------|-----------|------------|")
-            for am in accuracy_metrics:
-                lang = am.get("language", "?")
-                metric = am.get("metric", "?")
-                value = am.get("value", 0)
-                target = _accuracy_target(lang, metric)
-                passed = value <= target
-                score_str = f"{value:.1f}%"
-                target_str = f"≤{target:.0f}%"
-                pass_str = "✓" if passed else "✗"
-                ref = am.get("reference", "")[:80]
-                hyp = am.get("hypothesis", "")[:80]
-                lines.append(f"| {lang} | {metric} | {score_str} | {target_str} | {pass_str} | {ref} | {hyp} |")
-            lines.append("")
-
-        # --- Results by Category ---
+        # ── Results by Category ───────────────────────────────────────────────
         lines.append("## Results by Category\n")
         categories: dict[str, list[dict]] = {}
         for r in self.results:
             cat = self._categorize(r["nodeid"])
             categories.setdefault(cat, []).append(r)
 
+        lines.append("| Category | ✅ Passed | ❌ Failed | ⏭️ Skipped |")
+        lines.append("|----------|----------|----------|-----------|")
         for cat in sorted(categories):
-            cat_results = categories[cat]
-            cat_passed = sum(1 for r in cat_results if r["outcome"] == "passed")
-            cat_failed = sum(1 for r in cat_results if r["outcome"] == "failed")
-            cat_skipped = sum(1 for r in cat_results if r["outcome"] == "skipped")
-            cat_total = len(cat_results)
-
-            if cat_failed > 0:
-                icon = "x"
-            elif cat_skipped == cat_total:
-                icon = "-"
-            else:
-                icon = "check"
-
-            status_parts = []
-            if cat_passed:
-                status_parts.append(f"{cat_passed} passed")
-            if cat_failed:
-                status_parts.append(f"{cat_failed} failed")
-            if cat_skipped:
-                status_parts.append(f"{cat_skipped} skipped")
-
-            lines.append(f"### {'x' if cat_failed else '-' if cat_skipped == cat_total else '✓'} {cat} ({', '.join(status_parts)})\n")
+            cr = categories[cat]
+            cp = sum(1 for r in cr if r["outcome"] == "passed")
+            cf = sum(1 for r in cr if r["outcome"] == "failed")
+            cs = sum(1 for r in cr if r["outcome"] == "skipped")
+            icon = "❌" if cf else ("⏭️" if cs == len(cr) else "✅")
+            lines.append(f"| {icon} {cat} | {cp} | {cf} | {cs} |")
         lines.append("")
 
-        # --- All Tests ---
+        # ── All Tests ─────────────────────────────────────────────────────────
         lines.append("## All Tests\n")
-        lines.append("| Test | Status | Duration |")
-        lines.append("|------|--------|----------|")
+        lines.append("| Test | Status | Duration | SLA |")
+        lines.append("|------|--------|----------|-----|")
         for r in self.results:
-            name = r["nodeid"].split("::")[-1]
-            status = r["outcome"].upper()
-            dur = f"{r['duration']:.2f}s"
-            lines.append(f"| {name} | {status} | {dur} |")
+            name    = r["nodeid"].split("::")[-1]
+            outcome = r["outcome"]
+            dur     = r["duration"]
+            sla     = _sla_for(name)
+
+            if outcome == "passed":
+                status_icon = "✅"
+                sla_icon    = "✅" if dur <= sla else f"⚠️ SLOW (≤{sla:.0f}s)"
+            elif outcome == "skipped":
+                status_icon = "⏭️"
+                sla_icon    = "—"
+            else:
+                status_icon = "❌"
+                sla_icon    = "—"
+
+            lines.append(f"| `{name}` | {status_icon} {outcome.upper()} | {dur:.2f}s | {sla_icon} |")
         lines.append("")
 
         report_path.write_text("\n".join(lines))
@@ -284,16 +468,33 @@ def pytest_runtest_makereport(item, call):
     rep = outcome.get_result()
     # Only record the "call" phase (not setup/teardown), or skip from setup
     if rep.when == "call" or (rep.when == "setup" and rep.skipped):
-        # Extract captured stdout from rep.sections
+        # Captured stdout
         stdout = ""
         for section_name, section_content in rep.sections:
             if "stdout" in section_name.lower():
                 stdout += section_content
+
+        # Failure message (last meaningful line of the traceback)
+        longrepr = ""
+        if rep.failed and rep.longrepr:
+            longrepr = str(rep.longrepr)
+
+        # Skip reason
+        skip_reason = ""
+        if rep.skipped and rep.longrepr:
+            if isinstance(rep.longrepr, tuple) and len(rep.longrepr) >= 3:
+                reason = rep.longrepr[2]
+                skip_reason = reason[len("Skipped: "):] if reason.startswith("Skipped: ") else reason
+            else:
+                skip_reason = str(rep.longrepr)
+
         _report_generator.add_result(
             nodeid=rep.nodeid,
             outcome=rep.outcome,
             duration=rep.duration,
             stdout=stdout,
+            longrepr=longrepr,
+            skip_reason=skip_reason,
         )
 
 

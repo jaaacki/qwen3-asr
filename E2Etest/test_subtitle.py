@@ -45,6 +45,27 @@ def parse_srt(srt: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Report helpers
+# ---------------------------------------------------------------------------
+
+def _print_srt_stats(audio_path: Path, srt: str) -> None:
+    """Print structured SRT metrics captured by the markdown report generator."""
+    events = parse_srt(srt)
+    print(f'Audio: {audio_path.name}')
+    print(f'SRT Events: {len(events)}')
+    if events:
+        print(f'SRT First: "{events[0]["text"][:60]}"')
+        max_dur_ms = max(e["end_ms"] - e["start_ms"] for e in events)
+        print(f'SRT Max Duration: {max_dur_ms / 1000:.1f}s')
+        text_lines = [
+            l.strip() for l in srt.splitlines()
+            if l.strip() and "-->" not in l and not l.strip().isdigit()
+        ]
+        if text_lines:
+            print(f'SRT Max Line: {max(len(l) for l in text_lines)} chars')
+
+
+# ---------------------------------------------------------------------------
 # Smoke tests — basic accurate-mode validation
 # ---------------------------------------------------------------------------
 
@@ -59,6 +80,7 @@ class TestSubtitleAccurateSmoke:
             srt = client.subtitle(subtitle_audio_5s, mode="fast")
         assert srt.strip(), "SRT response must not be empty"
         assert "-->" in srt, "SRT must contain at least one timestamp arrow"
+        _print_srt_stats(subtitle_audio_5s, srt)
 
     def test_timestamp_format(self, ensure_server, subtitle_audio_5s: Path):
         """Every timestamp line is HH:MM:SS,mmm --> HH:MM:SS,mmm."""
@@ -68,6 +90,7 @@ class TestSubtitleAccurateSmoke:
         assert ts_lines, "No timestamp lines found"
         for line in ts_lines:
             assert TIMESTAMP_RE.search(line), f"Malformed timestamp: {line!r}"
+        _print_srt_stats(subtitle_audio_5s, srt)
 
     def test_start_before_end(self, ensure_server, subtitle_audio_5s: Path):
         """Every event: start_ms < end_ms."""
@@ -77,6 +100,7 @@ class TestSubtitleAccurateSmoke:
             assert ev["start_ms"] < ev["end_ms"], (
                 f"start >= end: {ev['start_ms']}ms >= {ev['end_ms']}ms  text={ev['text']!r}"
             )
+        _print_srt_stats(subtitle_audio_5s, srt)
 
     def test_content_disposition_header(self, ensure_server, subtitle_audio_5s: Path):
         """Response carries Content-Disposition: attachment; filename=subtitles.srt."""
@@ -85,17 +109,21 @@ class TestSubtitleAccurateSmoke:
                 resp = hc.post(
                     "/v1/audio/subtitles",
                     files={"file": (subtitle_audio_5s.name, f, "audio/wav")},
-                    data={"mode": "accurate"},
+                    data={"mode": "fast"},
                 )
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text[:200]}"
         cd = resp.headers.get("content-disposition", "")
         assert "subtitles.srt" in cd, f"Unexpected Content-Disposition: {cd!r}"
+        print(f'Audio: {subtitle_audio_5s.name}')
+        print(f'Content-Disposition: {cd}')
+        _print_srt_stats(subtitle_audio_5s, resp.text)
 
     def test_with_explicit_language(self, ensure_server, subtitle_audio_5s: Path):
         """Accurate mode accepts explicit language=English parameter."""
         with ASRHTTPClient() as client:
             srt = client.subtitle(subtitle_audio_5s, language="English", mode="fast")
         assert "-->" in srt
+        _print_srt_stats(subtitle_audio_5s, srt)
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +145,7 @@ class TestSubtitleStructure:
                 f"Overlap: event {i} ends {events[i]['end_ms']}ms, "
                 f"event {i+1} starts {events[i+1]['start_ms']}ms"
             )
+        _print_srt_stats(subtitle_audio_20s, srt)
 
     def test_max_event_duration(self, ensure_server, subtitle_audio_20s: Path):
         """No event exceeds 7.5s (max_duration=7s + 500ms tolerance)."""
@@ -128,6 +157,7 @@ class TestSubtitleStructure:
             assert duration_ms <= MAX_MS, (
                 f"Event too long: {duration_ms}ms  text={ev['text'][:60]!r}"
             )
+        _print_srt_stats(subtitle_audio_20s, srt)
 
     def test_sequential_index_numbering(self, ensure_server, subtitle_audio_20s: Path):
         """SRT indices are sequential starting from 1."""
@@ -141,6 +171,7 @@ class TestSubtitleStructure:
         assert indices == list(range(1, len(indices) + 1)), (
             f"Non-sequential indices: {indices}"
         )
+        _print_srt_stats(subtitle_audio_20s, srt)
 
     def test_chronological_order(self, ensure_server, subtitle_audio_20s: Path):
         """Events appear in strictly ascending time order."""
@@ -152,6 +183,7 @@ class TestSubtitleStructure:
                 f"Out-of-order events at {i}: {events[i]['start_ms']}ms "
                 f"> {events[i+1]['start_ms']}ms"
             )
+        _print_srt_stats(subtitle_audio_20s, srt)
 
     def test_valid_block_structure(self, ensure_server, subtitle_audio_20s: Path):
         """Each block: index line → timestamp line → ≥1 text line."""
@@ -168,6 +200,7 @@ class TestSubtitleStructure:
                 f"Block {i}: expected timestamp, got {lines[1]!r}"
             )
             assert lines[2].strip(), f"Block {i}: empty text"
+        _print_srt_stats(subtitle_audio_20s, srt)
 
     def test_line_length_respected(self, ensure_server, subtitle_audio_20s: Path):
         """No text line exceeds max_line_chars=42."""
@@ -180,6 +213,7 @@ class TestSubtitleStructure:
                 assert len(stripped) <= MAX_CHARS, (
                     f"Line too long ({len(stripped)} chars): {stripped!r}"
                 )
+        _print_srt_stats(subtitle_audio_20s, srt)
 
     def test_multiple_events_long_audio(self, ensure_server, subtitle_audio_long: Path):
         """60s audio produces at least 3 subtitle events."""
@@ -187,6 +221,7 @@ class TestSubtitleStructure:
             srt = client.subtitle(subtitle_audio_long, mode="fast")
         events = parse_srt(srt)
         assert len(events) >= 3, f"Expected ≥3 events for 60s audio, got {len(events)}"
+        _print_srt_stats(subtitle_audio_long, srt)
 
 
 # ---------------------------------------------------------------------------

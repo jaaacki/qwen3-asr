@@ -87,6 +87,9 @@ class TestTranscriptionBasic:
             assert "text" in result
             assert "language" in result
             assert isinstance(result["text"], str)
+            print(f'Audio: {sample_audio_5s.name}')
+            print(f'Transcription: {result["text"][:120] or "(empty)"}')
+            print(f'Detected: {result.get("language") or "?"}')
 
     def test_transcribe_medium_audio(self, ensure_server, sample_audio_20s: Path):
         """Can transcribe medium (5-25s) audio file."""
@@ -95,6 +98,9 @@ class TestTranscriptionBasic:
 
             assert "text" in result
             assert "language" in result
+            print(f'Audio: {sample_audio_20s.name}')
+            print(f'Transcription: {result["text"][:120] or "(empty)"}')
+            print(f'Detected: {result.get("language") or "?"}')
 
     def test_transcribe_with_language_param(self, ensure_server, sample_audio_5s: Path):
         """Transcription accepts language parameter.
@@ -107,6 +113,9 @@ class TestTranscriptionBasic:
 
             assert "text" in result
             assert result.get("language") == "English"
+            print(f'Audio: {sample_audio_5s.name}')
+            print(f'Transcription: {result["text"][:120] or "(empty)"}')
+            print(f'Detected: {result.get("language") or "?"}')
 
     def test_transcribe_returns_timestamps_when_requested(
         self, ensure_server, sample_audio_5s: Path
@@ -282,6 +291,9 @@ class TestClientWrapper:
             result = client.transcribe_bytes(audio_bytes, filename="test.wav")
 
             assert "text" in result
+            print(f'Audio: {sample_audio_5s.name}')
+            print(f'Transcription: {result["text"][:120] or "(empty)"}')
+            print(f'Detected: {result.get("language") or "?"}')
 
     def test_client_health_includes_model_info(self, ensure_server):
         """Health check includes model information."""
