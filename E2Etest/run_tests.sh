@@ -165,6 +165,13 @@ set -e
 
 echo "========================================"
 
+# Show report path
+LATEST_REPORT=$(ls -t E2Etest/reports/*.md 2>/dev/null | head -1)
+if [ -n "$LATEST_REPORT" ]; then
+    echo ""
+    echo -e "${GREEN}Markdown report:${NC} $LATEST_REPORT"
+fi
+
 # Stop server if we started it
 if [ "$WITH_SERVER" = true ]; then
     echo ""

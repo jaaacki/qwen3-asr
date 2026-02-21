@@ -1,1 +1,3 @@
 *.wav
+# Allow real test audio (FLEURS dataset samples for accuracy tests)
+!real/*.wav

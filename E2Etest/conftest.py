@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Generator
 
@@ -21,6 +23,209 @@ DEFAULT_BASE_URL = "http://localhost:8100"
 DEFAULT_WS_URL = "ws://localhost:8100/ws/transcribe"
 HEALTH_TIMEOUT = 30  # seconds to wait for server health check
 MODEL_LOAD_TIMEOUT = 120  # seconds to wait for model to load
+
+
+# =============================================================================
+# Markdown Report Generator
+# =============================================================================
+
+class MarkdownReportGenerator:
+    """Collects test results and generates a markdown report."""
+
+    def __init__(self):
+        self.results: list[dict] = []
+        self.session_start: float = 0.0
+        self.session_end: float = 0.0
+        self.server_info: dict = {}
+
+    def add_result(self, nodeid: str, outcome: str, duration: float, stdout: str = ""):
+        self.results.append({
+            "nodeid": nodeid,
+            "outcome": outcome,
+            "duration": duration,
+            "stdout": stdout,
+        })
+
+    def _fetch_server_info(self) -> dict:
+        """Fetch model/GPU info from the health endpoint."""
+        try:
+            resp = httpx.get(
+                f"{os.getenv('E2E_BASE_URL', DEFAULT_BASE_URL)}/health",
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            pass
+        return {}
+
+    def _categorize(self, nodeid: str) -> str:
+        """Derive a category from the test nodeid."""
+        # e.g. test_api_http.py::TestFoo::test_bar -> HTTP API
+        fname = nodeid.split("::")[0].rsplit("/", 1)[-1]
+        mapping = {
+            "test_api_http": "HTTP API",
+            "test_websocket": "WebSocket",
+            "test_performance": "Performance",
+            "test_integration": "Integration",
+            "test_accuracy": "Accuracy",
+        }
+        for key, label in mapping.items():
+            if key in fname:
+                return label
+        return "Other"
+
+    def _parse_performance_metrics(self) -> list[dict]:
+        """Extract performance metrics from stdout of performance tests."""
+        metrics = []
+        for r in self.results:
+            if not r["stdout"]:
+                continue
+            # Look for patterns like "Cold start: 45.2s" or timing lines
+            for line in r["stdout"].splitlines():
+                # Match "metric_name: Xs" or "metric_name ... Xs"
+                m = re.search(
+                    r"([\w\s]+?):\s*([\d.]+)\s*s(?:econds?)?",
+                    line, re.IGNORECASE,
+                )
+                if m:
+                    metrics.append({
+                        "test": r["nodeid"].split("::")[-1],
+                        "metric": m.group(1).strip(),
+                        "value": float(m.group(2)),
+                    })
+        return metrics
+
+    def generate(self, output_dir: Path) -> Path:
+        """Write the markdown report and return the file path."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        report_path = output_dir / f"{ts}.md"
+
+        info = self._fetch_server_info()
+        total_duration = self.session_end - self.session_start
+
+        passed = sum(1 for r in self.results if r["outcome"] == "passed")
+        failed = sum(1 for r in self.results if r["outcome"] == "failed")
+        skipped = sum(1 for r in self.results if r["outcome"] == "skipped")
+        errored = sum(1 for r in self.results if r["outcome"] == "error")
+        total = len(self.results)
+
+        lines: list[str] = []
+        lines.append(f"# E2E Test Report — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+        # --- Summary ---
+        lines.append("## Summary\n")
+        lines.append("| Metric | Value |")
+        lines.append("|--------|-------|")
+        lines.append(f"| Total | {total} |")
+        lines.append(f"| Passed | {passed} |")
+        lines.append(f"| Failed | {failed} |")
+        lines.append(f"| Skipped | {skipped} |")
+        if errored:
+            lines.append(f"| Errors | {errored} |")
+        lines.append(f"| Duration | {total_duration:.1f}s |")
+        model = info.get("model_id") or info.get("model") or "N/A"
+        lines.append(f"| Model | {model} |")
+        gpu = info.get("gpu") or info.get("gpu_name") or "N/A"
+        lines.append(f"| GPU | {gpu} |")
+        lines.append("")
+
+        # --- Performance Metrics ---
+        perf_metrics = self._parse_performance_metrics()
+        if perf_metrics:
+            lines.append("## Performance Metrics\n")
+            lines.append("| Test | Metric | Value |")
+            lines.append("|------|--------|-------|")
+            for pm in perf_metrics:
+                lines.append(f"| {pm['test']} | {pm['metric']} | {pm['value']:.2f}s |")
+            lines.append("")
+
+        # --- Results by Category ---
+        lines.append("## Results by Category\n")
+        categories: dict[str, list[dict]] = {}
+        for r in self.results:
+            cat = self._categorize(r["nodeid"])
+            categories.setdefault(cat, []).append(r)
+
+        for cat in sorted(categories):
+            cat_results = categories[cat]
+            cat_passed = sum(1 for r in cat_results if r["outcome"] == "passed")
+            cat_failed = sum(1 for r in cat_results if r["outcome"] == "failed")
+            cat_skipped = sum(1 for r in cat_results if r["outcome"] == "skipped")
+            cat_total = len(cat_results)
+
+            if cat_failed > 0:
+                icon = "x"
+            elif cat_skipped == cat_total:
+                icon = "-"
+            else:
+                icon = "check"
+
+            status_parts = []
+            if cat_passed:
+                status_parts.append(f"{cat_passed} passed")
+            if cat_failed:
+                status_parts.append(f"{cat_failed} failed")
+            if cat_skipped:
+                status_parts.append(f"{cat_skipped} skipped")
+
+            lines.append(f"### {'x' if cat_failed else '-' if cat_skipped == cat_total else '✓'} {cat} ({', '.join(status_parts)})\n")
+        lines.append("")
+
+        # --- All Tests ---
+        lines.append("## All Tests\n")
+        lines.append("| Test | Status | Duration |")
+        lines.append("|------|--------|----------|")
+        for r in self.results:
+            name = r["nodeid"].split("::")[-1]
+            status = r["outcome"].upper()
+            dur = f"{r['duration']:.2f}s"
+            lines.append(f"| {name} | {status} | {dur} |")
+        lines.append("")
+
+        report_path.write_text("\n".join(lines))
+        return report_path
+
+
+# Module-level report generator instance
+_report_generator = MarkdownReportGenerator()
+
+
+# =============================================================================
+# Pytest hooks for report generation
+# =============================================================================
+
+def pytest_sessionstart(session):
+    """Record session start time."""
+    _report_generator.session_start = time.time()
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Capture each test result for the markdown report."""
+    outcome = yield
+    rep = outcome.get_result()
+    # Only record the "call" phase (not setup/teardown), or skip from setup
+    if rep.when == "call" or (rep.when == "setup" and rep.skipped):
+        stdout = ""
+        if hasattr(rep, "capstdout"):
+            stdout = rep.capstdout or ""
+        _report_generator.add_result(
+            nodeid=rep.nodeid,
+            outcome=rep.outcome,
+            duration=rep.duration,
+            stdout=stdout,
+        )
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Generate the markdown report at the end of the session."""
+    _report_generator.session_end = time.time()
+    reports_dir = Path(__file__).parent / "reports"
+    report_path = _report_generator.generate(reports_dir)
+    terminalreporter.write_sep("=", "Markdown Report")
+    terminalreporter.write_line(f"Report saved to: {report_path}")
 
 
 # =============================================================================

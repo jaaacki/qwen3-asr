@@ -18,3 +18,6 @@ soundfile>=0.12.0
 
 # Utilities
 psutil>=5.9.0
+
+# Audio download (for download_test_audio.py only)
+datasets>=2.14.0

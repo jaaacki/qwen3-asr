@@ -7,6 +7,7 @@ Tests transcription quality:
 """
 
 import re
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -15,21 +16,9 @@ import pytest
 from utils.client import ASRHTTPClient
 
 
-def calculate_wer(reference: str, hypothesis: str) -> float:
-    """Calculate Word Error Rate between reference and hypothesis.
-
-    WER = (S + D + I) / N
-    where S = substitutions, D = deletions, I = insertions, N = reference length
-    """
-    # Normalize text
-    ref_words = reference.lower().strip().split()
-    hyp_words = hypothesis.lower().strip().split()
-
-    if len(ref_words) == 0:
-        return 0.0 if len(hyp_words) == 0 else 1.0
-
-    # Dynamic programming for edit distance
-    m, n = len(ref_words), len(hyp_words)
+def _edit_distance(ref_tokens: list, hyp_tokens: list) -> int:
+    """Compute edit distance between two token sequences."""
+    m, n = len(ref_tokens), len(hyp_tokens)
     dp = [[0] * (n + 1) for _ in range(m + 1)]
 
     for i in range(m + 1):
@@ -39,15 +28,57 @@ def calculate_wer(reference: str, hypothesis: str) -> float:
 
     for i in range(1, m + 1):
         for j in range(1, n + 1):
-            if ref_words[i - 1] == hyp_words[j - 1]:
+            if ref_tokens[i - 1] == hyp_tokens[j - 1]:
                 dp[i][j] = dp[i - 1][j - 1]
             else:
                 dp[i][j] = 1 + min(dp[i - 1][j],      # deletion
                                   dp[i][j - 1],      # insertion
                                   dp[i - 1][j - 1])  # substitution
+    return dp[m][n]
 
-    errors = dp[m][n]
+
+def calculate_wer(reference: str, hypothesis: str) -> float:
+    """Calculate Word Error Rate between reference and hypothesis.
+
+    WER = (S + D + I) / N
+    where S = substitutions, D = deletions, I = insertions, N = reference length
+    """
+    ref_words = reference.lower().strip().split()
+    hyp_words = hypothesis.lower().strip().split()
+
+    if len(ref_words) == 0:
+        return 0.0 if len(hyp_words) == 0 else 1.0
+
+    errors = _edit_distance(ref_words, hyp_words)
     return errors / len(ref_words)
+
+
+def _normalize_for_cer(text: str) -> str:
+    """Normalize text for character-level comparison.
+
+    Removes spaces, punctuation, and normalizes Unicode for fair CJK comparison.
+    """
+    text = unicodedata.normalize("NFKC", text.strip().lower())
+    # Remove whitespace and common punctuation
+    text = re.sub(r'[\s\u3000]+', '', text)  # spaces + ideographic space
+    text = re.sub(r'[，。、；：！？""''「」『』（）\[\]【】〈〉《》‧·,\.;:!\?\-\'\"()]', '', text)
+    return text
+
+
+def calculate_cer(reference: str, hypothesis: str) -> float:
+    """Calculate Character Error Rate — suited for CJK and Thai text.
+
+    Like WER but operates on individual characters after normalizing away
+    spaces and punctuation (which differ between reference and ASR output).
+    """
+    ref_chars = list(_normalize_for_cer(reference))
+    hyp_chars = list(_normalize_for_cer(hypothesis))
+
+    if len(ref_chars) == 0:
+        return 0.0 if len(hyp_chars) == 0 else 1.0
+
+    errors = _edit_distance(ref_chars, hyp_chars)
+    return errors / len(ref_chars)
 
 
 def has_repetition_artifacts(text: str) -> bool:
@@ -219,3 +250,146 @@ class TestOutputFormat:
 
         # Very high rate might indicate garbage
         assert chars_per_sec < 50, f"Unreasonably high char rate: {chars_per_sec:.1f}/s"
+
+
+# =============================================================================
+# Multilingual Accuracy Tests (real audio from FLEURS)
+# =============================================================================
+
+REAL_AUDIO_DIR = Path(__file__).parent / "data" / "audio" / "real"
+EXPECTED_DIR = Path(__file__).parent / "data" / "expected"
+
+# Languages that need character-level error rate (CER) instead of word-level WER.
+# CJK and Thai text is not space-delimited, so word-level WER is meaningless.
+CER_LANGUAGES = {"Chinese", "Japanese", "Cantonese", "Thai"}
+
+# Language mapping: (display_name, audio_file, ref_file, language_param)
+MULTILINGUAL_CASES = [
+    ("English", "english_01.wav", "english_01.txt", "English"),
+    ("English-2", "english_02.wav", "english_02.txt", "English"),
+    ("Chinese", "chinese_01.wav", "chinese_01.txt", "Chinese"),
+    ("Chinese-2", "chinese_02.wav", "chinese_02.txt", "Chinese"),
+    ("Japanese", "japanese_01.wav", "japanese_01.txt", "Japanese"),
+    ("Japanese-2", "japanese_02.wav", "japanese_02.txt", "Japanese"),
+    ("Cantonese", "cantonese_01.wav", "cantonese_01.txt", "Cantonese"),
+    ("Cantonese-2", "cantonese_02.wav", "cantonese_02.txt", "Cantonese"),
+    ("Hindi", "hindi_01.wav", "hindi_01.txt", "Hindi"),
+    ("Hindi-2", "hindi_02.wav", "hindi_02.txt", "Hindi"),
+    ("Thai", "thai_01.wav", "thai_01.txt", "Thai"),
+    ("Thai-2", "thai_02.wav", "thai_02.txt", "Thai"),
+]
+
+
+@pytest.mark.accuracy
+class TestMultilingualAccuracy:
+    """Test transcription accuracy across languages with real FLEURS audio."""
+
+    @pytest.mark.parametrize(
+        "lang,audio_file,ref_file,lang_param",
+        [(c[0], c[1], c[2], c[3]) for c in MULTILINGUAL_CASES],
+        ids=[c[0] for c in MULTILINGUAL_CASES],
+    )
+    def test_language_transcription(
+        self, ensure_server, lang, audio_file, ref_file, lang_param,
+    ):
+        """Transcribe real audio and compare to reference transcription."""
+        audio_path = REAL_AUDIO_DIR / audio_file
+        ref_path = EXPECTED_DIR / ref_file
+
+        if not audio_path.exists():
+            pytest.skip(
+                f"Real audio not found: {audio_path}. "
+                "Run: python E2Etest/download_test_audio.py"
+            )
+        if not ref_path.exists():
+            pytest.skip(f"Reference transcript not found: {ref_path}")
+
+        reference = ref_path.read_text().strip()
+
+        with ASRHTTPClient() as client:
+            result = client.transcribe(audio_path, language=lang_param)
+            hypothesis = result["text"]
+
+        assert hypothesis.strip(), f"Empty transcription for {lang}"
+
+        # Use CER for CJK/Thai (not space-delimited), WER for alphabetic
+        base_lang = lang.rstrip("-2").rstrip("0123456789").rstrip("-")
+        if base_lang in CER_LANGUAGES:
+            error_rate = calculate_cer(reference, hypothesis)
+            metric_name = "CER"
+        else:
+            error_rate = calculate_wer(reference, hypothesis)
+            metric_name = "WER"
+
+        # Print details for report capture
+        print(f"Language: {lang}")
+        print(f"{metric_name}: {error_rate:.2%}")
+        print(f"Reference: {reference[:120]}")
+        print(f"Hypothesis: {hypothesis[:120]}")
+
+        # Generous threshold — real multilingual ASR is challenging
+        assert error_rate <= 0.5, (
+            f"{metric_name} too high for {lang}: {error_rate:.2%}\n"
+            f"Ref: {reference[:200]}\n"
+            f"Hyp: {hypothesis[:200]}"
+        )
+
+    @pytest.mark.parametrize(
+        "lang,audio_file,lang_param",
+        [
+            ("English", "english_01.wav", "English"),
+            ("Chinese", "chinese_01.wav", "Chinese"),
+            ("Japanese", "japanese_01.wav", "Japanese"),
+        ],
+        ids=["English-auto", "Chinese-auto", "Japanese-auto"],
+    )
+    def test_auto_language_detection_real_audio(
+        self, ensure_server, lang, audio_file, lang_param,
+    ):
+        """Auto language detection works on real speech."""
+        audio_path = REAL_AUDIO_DIR / audio_file
+        if not audio_path.exists():
+            pytest.skip(f"Real audio not found: {audio_path}")
+
+        with ASRHTTPClient() as client:
+            result = client.transcribe(audio_path, language="auto")
+
+        assert result.get("text", "").strip(), f"Empty transcription for auto-detected {lang}"
+        detected = result.get("language", "")
+        print(f"Expected: {lang_param}, Detected: {detected}")
+
+
+@pytest.mark.accuracy
+class TestCodeSwitching:
+    """Test code-switching (mixed language) transcription."""
+
+    def test_code_switched_audio(self, ensure_server):
+        """Transcribe code-switched audio with auto language detection."""
+        # Try both possible code-switching files
+        for name in ["codeswitching_01.wav", "codeswitching_02.wav"]:
+            audio_path = REAL_AUDIO_DIR / name
+            if audio_path.exists():
+                break
+        else:
+            pytest.skip(
+                "Code-switching audio not available. "
+                "CS-FLEURS dataset may not be accessible."
+            )
+
+        ref_path = EXPECTED_DIR / audio_path.stem
+        ref_path = ref_path.with_suffix(".txt")
+
+        with ASRHTTPClient() as client:
+            result = client.transcribe(audio_path, language="auto")
+
+        hypothesis = result["text"]
+        assert hypothesis.strip(), "Empty transcription for code-switched audio"
+
+        if ref_path.exists():
+            reference = ref_path.read_text().strip()
+            wer = calculate_wer(reference, hypothesis)
+            print(f"Code-switching WER: {wer:.2%}")
+            print(f"Reference: {reference[:120]}")
+            print(f"Hypothesis: {hypothesis[:120]}")
+        else:
+            print(f"No reference — hypothesis: {hypothesis[:120]}")
