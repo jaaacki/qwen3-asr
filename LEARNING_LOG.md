@@ -4,6 +4,32 @@ Running narrative of decisions, patterns, and lessons.
 
 ---
 
+## 2026-02-21 — Why this design: Lazy imports + SDK cleanup (Issue #82)
+
+**Type**: Why this design
+**Related**: Issue #82, v0.6.1
+
+### Context
+Container used 2.4GB RAM at idle (model not loaded) because `server.py` imported torch, transformers, and qwen_asr at module top-level. Additionally, server.py reimplemented audio preprocessing, long-audio chunking, and processor loading that the SDK already handles inside `model.transcribe()`.
+
+### Decision
+Two changes combined:
+1. **Lazy imports** — move all heavy imports into the functions that use them. Idle RAM drops to ~50-100MB (just FastAPI + uvicorn + numpy). Cold start adds ~3-5s to first request (acceptable since model loading already takes ~15s).
+2. **Remove SDK redundancies** — delete `preprocess_audio()`, `preprocess_audio_ws()`, `chunk_audio_at_silence()`, and separate `AutoProcessor` loading. The SDK's `model.transcribe()` handles normalization, resampling, and chunking internally.
+
+### Key insight
+The SDK's `split_audio_into_chunks()` is measurably superior to our `chunk_audio_at_silence()`: sliding window convolution with +/-5s search range vs simple RMS threshold. Our code was double-processing audio — preprocessing before passing to `transcribe()`, which preprocessed again internally.
+
+**Principle adopted:** Our code optimizes; the SDK transcribes. If `model.transcribe()` does it, delete our version.
+
+### What could go wrong
+- **Health endpoint torch import:** Solved by using `sys.modules.get("torch")` — health checks don't trigger the 2.4GB import.
+- **SDK behavior changes:** If a future SDK version changes normalization or chunking, transcription quality could degrade without any code change on our side. Mitigation: pin SDK version, E2E accuracy tests.
+- **WebSocket normalization:** Old `preprocess_audio_ws()` did peak normalization. SDK handles this internally, but if the SDK's approach differs, quiet audio might transcribe differently.
+- **Worker import ordering:** worker.py imports from server.py which now does lazy imports. If worker-side code touches torch symbols before `_ensure_model_loaded()` runs, it will NameError. Currently safe but fragile.
+
+---
+
 ## 2026-02-20 — Why this design: Three-phase optimization roadmap
 
 **Type**: Why this design

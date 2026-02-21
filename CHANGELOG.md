@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.6.1 — 2026-02-21
+
+### Memory & Performance
+- **Lazy imports** — `torch`, `soundfile`, `qwen_asr` deferred to first request; idle container RAM reduced from ~2.4GB to ~50-100MB (#82)
+- **Inductor thread limit** — `TORCHINDUCTOR_COMPILE_THREADS=1` prevents ~20 worker subprocesses (~800MB saved) (#82)
+- **Health endpoint** — no longer imports torch; uses `sys.modules` check to avoid 2.4GB spike from load balancer polling (#82)
+
+### Removed (SDK handles natively)
+- `preprocess_audio()`, `preprocess_audio_ws()`, `chunk_audio_at_silence()` — SDK's `model.transcribe()` handles audio normalization and chunking internally with superior algorithms (#82)
+- Separate `AutoProcessor` loading — SDK loads processor inside `Qwen3ASRModel.from_pretrained()` (#82)
+- Manual chunking loop in HTTP endpoint — single `_do_transcribe()` call replaces 40-line chunk-and-join logic (#82)
+
+### Fixed
+- worker.py: `_infer_semaphore` (non-existent) replaced with `_infer_queue` (#82)
+
 ## v0.6.0 — 2026-02-20
 
 ### Architecture

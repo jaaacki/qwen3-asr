@@ -64,7 +64,7 @@ Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accur
 
 ### File Organization
 
-- `src/server.py` — Core FastAPI server with inference logic, priority queue, WebSocket handling (~1170 lines)
+- `src/server.py` — Core FastAPI server with inference logic, priority queue, WebSocket handling (~1060 lines)
 - `src/gateway.py` — Gateway proxy mode (GATEWAY_MODE=true); routes to worker subprocess
 - `src/worker.py` — Inference worker for gateway mode; imports logic from server.py
 - `src/export_onnx.py` — Export encoder to ONNX for ORT acceleration
@@ -112,11 +112,11 @@ Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accur
 - Control messages: `flush`, `reset`, `config` (set language)
 - Buffer transcribed on disconnect (no audio loss)
 
-### Audio Preprocessing Pipeline
+### Audio Preprocessing & Chunking
 
-Input audio → mono conversion → float32 normalization → resample to 16kHz (torchaudio) → peak normalize to [-1, 1]
+Handled natively by the SDK's `model.transcribe()` — mono conversion, resampling to 16kHz, float32 normalization, and long-audio chunking (up to 20min) are all internal. server.py only adds server-level concerns: priority queue, WebSocket streaming, GPU optimizations, idle lifecycle.
 
-WebSocket fast path skips resampling (audio already at 16kHz).
+**Lazy imports:** Heavy libraries (torch, soundfile, qwen_asr) are imported on first request, not at module load. Idle container RAM is ~50-100MB instead of ~2.4GB.
 
 ### Optimizations (Opt-in)
 
