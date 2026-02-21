@@ -4,6 +4,25 @@ Running narrative of decisions, patterns, and lessons.
 
 ---
 
+## 2026-02-22 — What just happened: Replacing `print` and `logging` with `loguru` (Issues #87, #88)
+
+**Type**: What just happened
+**Related**: Issue #87, #88, v0.9.0
+
+### Preamble
+The system originally used generic `print()` statements spanning 5 files, mostly to track loading and timing events. While fast for prototyping, standard stdout prevents automated ingestion and makes it impossible to separate info from errors in dense production logs. Standard python `logging` from Uvicorn and FastAPI also bypassed stdout entirely.
+
+### Action
+Added a central `src/logger.py` declaring `loguru` with customized colored console formatting. We built an `InterceptHandler` to consume `uvicorn.access` and `uvicorn.error` logs natively into the new structured format. Standard `print`s in the codebase were cleanly replaced with `log.info`, `log.error`, etc. 
+
+### Why this over alternatives
+Standardizing python `logging` implies verbose `logger.getLogger(__name__)` everywhere and manually building `FileHandler` and `StreamHandler` configuration maps. `loguru` works exactly like a generic `print()`, wraps exceptions cleanly asynchronously, handles colored multithreading formats natively, and allows direct JSON structured emission whenever we choose to add a `serialize=True` flag in the future.
+
+### What could go wrong
+If additional 3rd-party libraries bypass python runtime standard handlers, they might still spawn rogue output into stderr. 
+
+---
+
 ## 2026-02-22 — Why this design: Isolated Translation Module (Issue #86)
 
 **Type**: Why this design

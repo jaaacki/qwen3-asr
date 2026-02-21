@@ -1,4 +1,6 @@
 """Subtitle generation module: ForcedAligner, segmentation, SRT formatting."""
+from logger import log
+
 from __future__ import annotations
 
 import dataclasses
@@ -312,14 +314,14 @@ def load_aligner():
     import torch
     from qwen_asr import Qwen3ForcedAligner
 
-    print(f"Loading ForcedAligner: {FORCED_ALIGNER_ID}...")
+    log.info(f"Loading ForcedAligner: {FORCED_ALIGNER_ID}...")
     _aligner = Qwen3ForcedAligner.from_pretrained(
         FORCED_ALIGNER_ID,
         torch_dtype=torch.bfloat16,
         device_map="cuda" if torch.cuda.is_available() else "cpu",
         trust_remote_code=True,
     )
-    print("ForcedAligner loaded")
+    log.info("ForcedAligner loaded")
 
 
 def unload_aligner():
@@ -329,7 +331,7 @@ def unload_aligner():
         return
     del _aligner
     _aligner = None
-    print("ForcedAligner unloaded")
+    log.info("ForcedAligner unloaded")
 
 
 def align_audio(

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from logger import log
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -149,9 +150,9 @@ def _load_vllm_engine(model_id: str):
             max_num_seqs=4,
             enforce_eager=False,
         )
-        print(f"vLLM engine loaded for {model_id}")
+        log.info(f"vLLM engine loaded for {model_id}")
     except Exception as e:
-        print(f"vLLM load failed: {e} -- falling back to native loader")
+        log.error(f"vLLM load failed: {e} -- falling back to native loader")
         _vllm_engine = None
 
 
@@ -205,9 +206,9 @@ def _load_vad():
         from silero_vad import load_silero_vad
         _vad_model = load_silero_vad()
         _vad_model.eval()
-        print("Silero VAD loaded")
+        log.info("Silero VAD loaded")
     except ImportError:
-        print("silero-vad not installed, VAD disabled")
+        log.info("silero-vad not installed, VAD disabled")
 
 
 def is_speech(audio_float32: np.ndarray, threshold: float = 0.5) -> bool:
@@ -237,9 +238,9 @@ def _try_load_trt_encoder():
     try:
         import torch
         _trt_encoder = torch.jit.load(trt_path)
-        print(f"TensorRT encoder loaded from {trt_path}")
+        log.info(f"TensorRT encoder loaded from {trt_path}")
     except Exception as e:
-        print(f"TRT encoder load failed: {e}")
+        log.error(f"TRT encoder load failed: {e}")
 
 
 # Encoder state cache for incremental encoding (session_id -> cached state)
@@ -272,11 +273,11 @@ def _patch_encoder_causal(model_obj):
                 patched_count += 1
 
         if patched_count > 0:
-            print(f"Causal encoder patch applied (EXPERIMENTAL): {patched_count} attention modules patched")
+            log.info(f"Causal encoder patch applied (EXPERIMENTAL): {patched_count} attention modules patched")
         else:
-            print("Causal encoder patch: no patchable attention modules found")
+            log.info("Causal encoder patch: no patchable attention modules found")
     except Exception as e:
-        print(f"Causal encoder patch failed (non-critical): {e}")
+        log.error(f"Causal encoder patch failed (non-critical): {e}")
 
     return model_obj
 
@@ -293,9 +294,9 @@ def _set_cpu_affinity():
         node_cpus = cpus[:half] if numa_node == 0 else cpus[half:]
         if node_cpus:
             proc.cpu_affinity(node_cpus)
-            print(f"CPU affinity set to NUMA node {numa_node}: {node_cpus}")
+            log.info(f"CPU affinity set to NUMA node {numa_node}: {node_cpus}")
     except Exception as e:
-        print(f"CPU affinity setting failed (non-critical): {e}")
+        log.error(f"CPU affinity setting failed (non-critical): {e}")
 
 
 def _load_model_sync():
@@ -313,7 +314,7 @@ def _load_model_sync():
     model_id = os.getenv("MODEL_ID", "Qwen/Qwen3-ASR-1.7B")
     loaded_model_id = model_id
 
-    print(f"Loading {model_id}...")
+    log.info(f"Loading {model_id}...")
 
     if USE_VLLM:
         _load_vllm_engine(model_id)
@@ -342,16 +343,16 @@ def _load_model_sync():
         low_cpu_mem_usage=True,
         attn_implementation=attn_impl,
     )
-    print(f"Attention implementation: {attn_impl}")
+    log.info(f"Attention implementation: {attn_impl}")
 
     if quantize_mode == "int8" and torch.cuda.is_available():
         try:
             from transformers import BitsAndBytesConfig
             load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
             load_kwargs["torch_dtype"] = torch.float16  # required for bitsandbytes
-            print("INT8 quantization enabled (bitsandbytes)")
+            log.info("INT8 quantization enabled (bitsandbytes)")
         except ImportError:
-            print("bitsandbytes not available, using default precision")
+            log.info("bitsandbytes not available, using default precision")
 
     model = Qwen3ASRModel.from_pretrained(model_id, **load_kwargs)
 
@@ -363,26 +364,26 @@ def _load_model_sync():
             try:
                 from torchao.quantization import quantize_, Float8DynamicActivationFloat8WeightConfig
                 quantize_(model, Float8DynamicActivationFloat8WeightConfig())
-                print("FP8 quantization applied (torchao)")
+                log.info("FP8 quantization applied (torchao)")
             except Exception as e:
-                print(f"FP8 quantization failed: {e}")
+                log.error(f"FP8 quantization failed: {e}")
         else:
             cc = f"sm_{compute_capability[0]}{compute_capability[1]}"
-            print(f"FP8 requires sm_89+, current GPU is {cc} -- skipping")
+            log.info(f"FP8 requires sm_89+, current GPU is {cc} -- skipping")
 
     # Compile for faster repeated inference (first call will be slower due to compilation)
     if torch.cuda.is_available():
         try:
             model = torch.compile(model, mode="reduce-overhead")
-            print("torch.compile enabled (mode=reduce-overhead)")
+            log.info("torch.compile enabled (mode=reduce-overhead)")
         except Exception as e:
-            print(f"torch.compile unavailable ({e}), using eager mode")
+            log.info(f"torch.compile unavailable ({e}), using eager mode")
 
     # Load fast (draft) model for speculative decoding
     if USE_SPECULATIVE:
         fast_model_id = os.getenv("FAST_MODEL_ID", "Qwen/Qwen3-ASR-0.6B")
         if fast_model_id != model_id:
-            print(f"Loading fast model {fast_model_id} for speculative decoding...")
+            log.info(f"Loading fast model {fast_model_id} for speculative decoding...")
             _fast_model = Qwen3ASRModel.from_pretrained(
                 fast_model_id,
                 torch_dtype=torch.bfloat16,
@@ -392,13 +393,13 @@ def _load_model_sync():
                 attn_implementation="sdpa",
             )
         else:
-            print("Speculative decoding: main and fast model are the same, skipping dual load")
+            log.info("Speculative decoding: main and fast model are the same, skipping dual load")
 
     model = _patch_encoder_causal(model)
 
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
-        print("Warming up GPU...")
+        log.info("Warming up GPU...")
         # Use low-amplitude noise (better than silence for CUDA kernel caching)
         rng = np.random.default_rng(seed=42)
         dummy = rng.standard_normal(TARGET_SR).astype(np.float32) * 0.01
@@ -413,12 +414,12 @@ def _load_model_sync():
         _PINNED_AUDIO_BUFFER = torch.zeros(
             _PINNED_BUFFER_SIZE, dtype=torch.float32
         ).pin_memory()
-        print(f"Pinned memory buffer allocated: {_PINNED_BUFFER_SIZE * 4 / 1024:.0f} KB")
+        log.info(f"Pinned memory buffer allocated: {_PINNED_BUFFER_SIZE * 4 / 1024:.0f} KB")
 
     global _cuda_stream
     if torch.cuda.is_available():
         _cuda_stream = torch.cuda.Stream()
-        print("CUDA inference stream created")
+        log.info("CUDA inference stream created")
 
     _try_build_cuda_graph()
 
@@ -428,7 +429,7 @@ def _load_model_sync():
 
     if os.getenv("DUAL_MODEL", "").lower() == "true" and torch.cuda.is_available():
         try:
-            print(f"Loading fast model ({_fast_model_id}) for partial transcriptions...")
+            log.info(f"Loading fast model ({_fast_model_id}) for partial transcriptions...")
             _fast_model = Qwen3ASRModel.from_pretrained(
                 _fast_model_id,
                 torch_dtype=torch.bfloat16,
@@ -438,16 +439,16 @@ def _load_model_sync():
                 attn_implementation="sdpa",
             )
             _fast_model.eval()
-            print("Dual-model strategy enabled")
+            log.info("Dual-model strategy enabled")
         except Exception as e:
-            print(f"Fast model load failed: {e}, using single model")
+            log.error(f"Fast model load failed: {e}, using single model")
 
     _last_used = time.time()
-    print(f"Model loaded! GPU memory after load:")
+    log.info(f"Model loaded! GPU memory after load:")
     if torch.cuda.is_available():
         allocated = torch.cuda.memory_allocated() / 1024**2
         reserved = torch.cuda.memory_reserved() / 1024**2
-        print(f"  Allocated: {allocated:.0f} MB, Reserved: {reserved:.0f} MB")
+        log.info(f"  Allocated: {allocated:.0f} MB, Reserved: {reserved:.0f} MB")
 
     _load_vad()
 
@@ -471,9 +472,9 @@ def _try_build_cuda_graph():
         for _ in range(3):
             model.transcribe((dummy, TARGET_SR))
         torch.cuda.synchronize()
-        print("CUDA kernel cache warming complete (3 extra passes)")
+        log.info("CUDA kernel cache warming complete (3 extra passes)")
     except Exception as e:
-        print(f"CUDA kernel cache warming failed: {e}")
+        log.error(f"CUDA kernel cache warming failed: {e}")
 
 
 def _try_load_onnx_encoder():
@@ -488,9 +489,9 @@ def _try_load_onnx_encoder():
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
         _onnx_session = ort.InferenceSession(onnx_path, opts, providers=providers)
-        print(f"ONNX encoder loaded from {onnx_path}")
+        log.info(f"ONNX encoder loaded from {onnx_path}")
     except Exception as e:
-        print(f"ONNX encoder load failed: {e}")
+        log.error(f"ONNX encoder load failed: {e}")
 
 
 def _unload_model_sync():
@@ -501,7 +502,7 @@ def _unload_model_sync():
     if model is None:
         return
 
-    print("Unloading model (idle timeout)...")
+    log.info("Unloading model (idle timeout)...")
     # Unload ForcedAligner if loaded
     from subtitle import unload_aligner
     unload_aligner()
@@ -516,7 +517,7 @@ def _unload_model_sync():
     if torch.cuda.is_available():
         allocated = torch.cuda.memory_allocated() / 1024**2
         reserved = torch.cuda.memory_reserved() / 1024**2
-        print(f"Model unloaded. GPU: Allocated: {allocated:.0f} MB, Reserved: {reserved:.0f} MB")
+        log.info(f"Model unloaded. GPU: Allocated: {allocated:.0f} MB, Reserved: {reserved:.0f} MB")
 
 
 async def _ensure_model_loaded():
@@ -1120,14 +1121,14 @@ async def websocket_transcribe(websocket: WebSocket):
                             encoder_cache=_prev_encoder_out,
                         )
                         if text:
-                            print(f"[WS] Final transcription on disconnect: {text}")
+                            log.info(f"[WS] Final transcription on disconnect: {text}")
                     except Exception:
                         pass
-                print("WebSocket client disconnected")
+                log.info("WebSocket client disconnected")
                 break
 
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        log.error(f"WebSocket error: {e}")
         try:
             await websocket.send_json({"error": str(e)})
         except Exception:
@@ -1207,7 +1208,7 @@ async def _transcribe_with_context(
     except asyncio.TimeoutError:
         return "[timeout]", None
     except Exception as e:
-        print(f"Transcription error: {e}")
+        log.error(f"Transcription error: {e}")
         return f"[error: {e}]", None
 
 

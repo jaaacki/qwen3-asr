@@ -5,6 +5,8 @@ Routes inference requests to the worker via HTTP on an internal port.
 Usage: GATEWAY_MODE=true in compose.yaml environment.
 The gateway starts on port 8000 (external) and spawns a worker on port 8001 (internal).
 """
+from logger import log
+
 import asyncio
 import json
 import os
@@ -32,7 +34,7 @@ async def _ensure_worker():
     global _worker_proc, _last_used
     async with _worker_lock:
         if _worker_proc is None or _worker_proc.poll() is not None:
-            print("Starting worker process...")
+            log.info("Starting worker process...")
             _worker_proc = subprocess.Popen([
                 sys.executable, "-m", "uvicorn", "worker:app",
                 "--host", WORKER_HOST, "--port", str(WORKER_PORT),
@@ -47,7 +49,7 @@ async def _ensure_worker():
                             f"http://{WORKER_HOST}:{WORKER_PORT}/health"
                         ) as resp:
                             if resp.status == 200:
-                                print("Worker process ready")
+                                log.info("Worker process ready")
                                 break
                 except Exception:
                     continue
@@ -59,14 +61,14 @@ async def _kill_worker():
     global _worker_proc
     async with _worker_lock:
         if _worker_proc is not None and _worker_proc.poll() is None:
-            print("Killing worker process (idle timeout)...")
+            log.info("Killing worker process (idle timeout)...")
             _worker_proc.terminate()
             try:
                 _worker_proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 _worker_proc.kill()
             _worker_proc = None
-            print("Worker process killed -- RAM reclaimed")
+            log.info("Worker process killed -- RAM reclaimed")
 
 
 async def _idle_watchdog():

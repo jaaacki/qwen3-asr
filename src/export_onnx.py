@@ -1,3 +1,4 @@
+from logger import log
 #!/usr/bin/env python3
 """
 Export Qwen3-ASR encoder to ONNX Runtime.
@@ -13,7 +14,7 @@ def export_encoder(model_id: str, output_path: str):
     from qwen_asr import Qwen3ASRModel
     from qwen_asr.inference.qwen3_asr import AutoProcessor
 
-    print(f"Loading {model_id}...")
+    log.info(f"Loading {model_id}...")
     model = Qwen3ASRModel.from_pretrained(
         model_id, torch_dtype=torch.float32, device_map="cpu", trust_remote_code=True
     )
@@ -22,7 +23,7 @@ def export_encoder(model_id: str, output_path: str):
     # Extract encoder submodule
     encoder = getattr(model, 'encoder', None) or getattr(model.model, 'encoder', None)
     if encoder is None:
-        print("Could not find encoder submodule. Model architecture may not support ONNX export.")
+        log.info("Could not find encoder submodule. Model architecture may not support ONNX export.")
         return
 
     # Dummy input: log-mel features [batch, n_mels, time]
@@ -39,7 +40,7 @@ def export_encoder(model_id: str, output_path: str):
         output_names=["encoder_out"],
         dynamic_axes={"log_mel": {2: "time"}, "encoder_out": {1: "time"}},
     )
-    print(f"Encoder exported to {output_path}")
+    log.info(f"Encoder exported to {output_path}")
 
 
 if __name__ == "__main__":

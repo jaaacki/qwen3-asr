@@ -1,3 +1,4 @@
+from logger import log
 #!/usr/bin/env python3
 """
 Build TensorRT engine for Qwen3-ASR encoder.
@@ -14,11 +15,11 @@ def build_trt_engine(model_id: str, output_path: str):
     try:
         import torch_tensorrt
     except ImportError:
-        print("torch-tensorrt not installed. Run: pip install torch-tensorrt")
+        log.info("torch-tensorrt not installed. Run: pip install torch-tensorrt")
         return
 
     from qwen_asr import Qwen3ASRModel
-    print(f"Loading {model_id}...")
+    log.info(f"Loading {model_id}...")
     model = Qwen3ASRModel.from_pretrained(
         model_id, torch_dtype=torch.float16, device_map="cuda",
         trust_remote_code=True
@@ -29,7 +30,7 @@ def build_trt_engine(model_id: str, output_path: str):
         getattr(model, 'model', None), 'encoder', None
     )
     if encoder is None:
-        print("Cannot find encoder submodule")
+        log.info("Cannot find encoder submodule")
         return
 
     dummy = torch.randn(1, 80, 3000, dtype=torch.float16, device="cuda")
@@ -47,7 +48,7 @@ def build_trt_engine(model_id: str, output_path: str):
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     torch.jit.save(torch.jit.trace(trt_model, dummy), output_path)
-    print(f"TensorRT engine saved to {output_path}")
+    log.info(f"TensorRT engine saved to {output_path}")
 
 
 if __name__ == "__main__":
