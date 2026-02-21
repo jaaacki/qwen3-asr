@@ -1,0 +1,20 @@
+# E2E Test requirements for Qwen3-ASR
+# Install with: pip install -r E2Etest/requirements.txt
+
+# Core testing framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-timeout>=2.1.0
+
+# HTTP client
+httpx>=0.24.0
+
+# WebSocket client
+websockets>=11.0.0
+
+# Audio processing
+numpy>=1.24.0
+soundfile>=0.12.0
+
+# Utilities
+psutil>=5.9.0

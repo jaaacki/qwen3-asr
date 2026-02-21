@@ -27,11 +27,38 @@ curl http://localhost:8100/health
 # Test transcription
 curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 
+# SSE streaming transcription
+curl -X POST http://localhost:8100/v1/audio/transcriptions/stream -F "file=@audio.wav"
+
 # Debug audio processing locally
 python src/debug_audio.py
 ```
 
-No test suite exists — validation is done via curl/manual testing against the running container.
+### E2E Tests
+
+Tests run against the live container (must be running on port 8100). Install deps first: `pip install -r E2Etest/requirements.txt`
+
+```bash
+# Run all tests (server must be running)
+pytest E2Etest/ -v
+
+# Via helper script (can auto-start server)
+bash E2Etest/run_tests.sh --with-server
+
+# Filter by category
+pytest E2Etest/ -k http          # HTTP API tests only
+pytest E2Etest/ -k websocket     # WebSocket tests only
+pytest E2Etest/ -m performance   # Performance benchmarks
+pytest E2Etest/ -m "not slow"    # Skip slow tests
+
+# Single test file
+pytest E2Etest/test_api_http.py -v
+
+# Single test
+pytest E2Etest/test_api_http.py::TestHealthEndpoint::test_health_returns_ok -v
+```
+
+Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accuracy`, `requires_gpu`. Timeout is 300s per test. Async mode is auto (pytest-asyncio).
 
 ## Architecture
 
@@ -42,6 +69,16 @@ No test suite exists — validation is done via curl/manual testing against the 
 - `src/worker.py` — Inference worker for gateway mode; imports logic from server.py
 - `src/export_onnx.py` — Export encoder to ONNX for ORT acceleration
 - `src/build_trt.py` — Build TensorRT engine for encoder
+- `E2Etest/` — pytest-based E2E test suite (test_api_http, test_websocket, test_performance, test_integration, test_accuracy)
+
+### API Endpoints
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/health` | GET | Health check, returns model status and config |
+| `/v1/audio/transcriptions` | POST | File upload transcription (OpenAI-compatible) |
+| `/v1/audio/transcriptions/stream` | POST | SSE streaming transcription (chunks long audio at silence boundaries) |
+| `/ws/transcribe` | WebSocket | Real-time streaming with raw PCM input |
 
 ### Concurrency Model
 
@@ -83,6 +120,8 @@ WebSocket fast path skips resampling (audio already at 16kHz).
 
 ### Optimizations (Opt-in)
 
+All Phase 3 features are gated behind environment variables — safe to experiment without breaking defaults.
+
 | Feature | Env Var | Description |
 |---------|---------|-------------|
 | Flash Attention 2 | auto-detected | Falls back to SDPA if unavailable |
@@ -116,12 +155,16 @@ WebSocket fast path skips resampling (audio already at 16kHz).
 
 Port mapping: container 8000 → host 8100.
 
+### Docker Build
+
+Base image: `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel`. The `devel` variant is required because `flash-attn` builds from source and needs `nvcc`. HuggingFace model cache is persisted via `./models` volume mount.
+
 ## Docs
 
 - `docs/WEBSOCKET_USAGE.md` — WebSocket protocol, connection format, example Python client
 - `docs/GRANIAN_BENCHMARK.md` — Performance comparison of ASGI servers
 - `RESEARCH_ANALYSIS.md` — Architecture comparison with official Qwen3-ASR SDK and vLLM backend
-- `improvements.md` — Prioritized optimization recommendations
-- `ROADMAP.md` — Milestone planning
+- `improvements.md` — Prioritized optimization recommendations (includes WebSocket critical path latency analysis)
+- `ROADMAP.md` — Milestone planning (3 phases, all completed)
 - `CHANGELOG.md` — Version history
 - `LEARNING_LOG.md` — Technical learnings and decisions
