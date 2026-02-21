@@ -55,6 +55,13 @@ _The system generates SRT subtitle files with word-level timestamp accuracy via 
 
 - [x] #83 SRT subtitle generation with accurate (ForcedAligner) and fast (heuristic) modes
 
+## Phase 5 — Translation & API Documentation → v0.8.0
+_The system supports translation to English and Chinese with a fully documented Swagger UI._
+
+Issues ordered by dependency:
+- [ ] #85 [Docs] Expose and document FastAPI Swagger UI
+- [ ] #86 [Enhancement] Add `/v1/audio/translations` endpoint
+
 ## Backlog
 _Unplaced items or future considerations._
 - Retire whisper-engine container (Qwen3-ASR-1.7B matches/beats Whisper large-v3)
