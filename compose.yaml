@@ -11,6 +11,8 @@ services:
     environment:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - REQUEST_TIMEOUT=300
+      - IDLE_TIMEOUT=1800
+      - GATEWAY_MODE=true
     deploy:
       resources:
         reservations:

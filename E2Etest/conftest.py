@@ -29,6 +29,35 @@ MODEL_LOAD_TIMEOUT = 120  # seconds to wait for model to load
 # Markdown Report Generator
 # =============================================================================
 
+# Language-specific WER/CER passing thresholds (%).
+# Used in the Accuracy Breakdown report table.
+_ACCURACY_TARGETS: dict[tuple[str, str], float] = {
+    # (language_lower, metric) -> max acceptable %
+    ("english", "WER"): 15.0,
+    ("chinese", "WER"): 25.0,
+    ("japanese", "WER"): 25.0,
+    ("cantonese", "WER"): 30.0,
+    ("hindi", "WER"): 30.0,
+    ("thai", "WER"): 35.0,
+    ("english", "CER"): 10.0,
+    ("chinese", "CER"): 20.0,
+    ("japanese", "CER"): 20.0,
+    ("cantonese", "CER"): 25.0,
+    ("hindi", "CER"): 25.0,
+    ("thai", "CER"): 30.0,
+}
+_DEFAULT_WER_TARGET = 35.0
+_DEFAULT_CER_TARGET = 30.0
+
+
+def _accuracy_target(language: str, metric: str) -> float:
+    """Return the passing threshold for (language, metric)."""
+    return _ACCURACY_TARGETS.get(
+        (language.lower(), metric),
+        _DEFAULT_CER_TARGET if metric == "CER" else _DEFAULT_WER_TARGET,
+    )
+
+
 class MarkdownReportGenerator:
     """Collects test results and generates a markdown report."""
 
@@ -172,16 +201,20 @@ class MarkdownReportGenerator:
         accuracy_metrics = self._parse_accuracy_metrics()
         if accuracy_metrics:
             lines.append("## Accuracy Breakdown\n")
-            lines.append("| Language | Metric | Score | Status | Reference | Hypothesis |")
-            lines.append("|----------|--------|-------|--------|-----------|------------|")
+            lines.append("| Language | Metric | Score | Target | Pass | Reference | Hypothesis |")
+            lines.append("|----------|--------|-------|--------|------|-----------|------------|")
             for am in accuracy_metrics:
                 lang = am.get("language", "?")
                 metric = am.get("metric", "?")
-                value = f"{am.get('value', 0):.1f}%"
-                status = am.get("status", "?").upper()
+                value = am.get("value", 0)
+                target = _accuracy_target(lang, metric)
+                passed = value <= target
+                score_str = f"{value:.1f}%"
+                target_str = f"≤{target:.0f}%"
+                pass_str = "✓" if passed else "✗"
                 ref = am.get("reference", "")[:80]
                 hyp = am.get("hypothesis", "")[:80]
-                lines.append(f"| {lang} | {metric} | {value} | {status} | {ref} | {hyp} |")
+                lines.append(f"| {lang} | {metric} | {score_str} | {target_str} | {pass_str} | {ref} | {hyp} |")
             lines.append("")
 
         # --- Results by Category ---
@@ -342,9 +375,57 @@ def audio_dir(data_dir: Path) -> Path:
 
 @pytest.fixture(scope="session", autouse=True)
 def generate_test_audio(audio_dir: Path):
-    """Auto-generate test audio files if they don't exist."""
+    """Auto-generate synthetic test audio files if they don't exist."""
     from utils.audio import generate_test_audio_files
     generate_test_audio_files(audio_dir)
+
+
+@pytest.fixture(scope="session")
+def subtitle_audio_dir(data_dir: Path) -> Path:
+    """Path to real-speech audio directory for subtitle tests."""
+    return data_dir / "audio" / "subtitle"
+
+
+@pytest.fixture(scope="session", autouse=False)
+def download_subtitle_audio(subtitle_audio_dir: Path):
+    """Download real-speech subtitle test audio if not already present."""
+    needed = ["speech_5s.wav", "speech_20s.wav", "speech_60s.wav"]
+    if all((subtitle_audio_dir / f).exists() for f in needed):
+        return
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+        from download_test_audio import download_subtitle_samples
+        download_subtitle_samples()
+    except Exception as e:
+        pytest.skip(f"Could not download subtitle audio samples: {e}")
+
+
+@pytest.fixture(scope="session")
+def subtitle_audio_5s(download_subtitle_audio, subtitle_audio_dir: Path) -> Path:
+    """~5s real speech audio for subtitle smoke tests."""
+    path = subtitle_audio_dir / "speech_5s.wav"
+    if not path.exists():
+        pytest.fail(f"Subtitle audio not found: {path}  (run: python E2Etest/download_test_audio.py --subtitle-only)")
+    return path
+
+
+@pytest.fixture(scope="session")
+def subtitle_audio_20s(download_subtitle_audio, subtitle_audio_dir: Path) -> Path:
+    """~20s real speech audio for subtitle structural tests."""
+    path = subtitle_audio_dir / "speech_20s.wav"
+    if not path.exists():
+        pytest.fail(f"Subtitle audio not found: {path}  (run: python E2Etest/download_test_audio.py --subtitle-only)")
+    return path
+
+
+@pytest.fixture(scope="session")
+def subtitle_audio_long(download_subtitle_audio, subtitle_audio_dir: Path) -> Path:
+    """~60s real speech audio for subtitle multi-event tests."""
+    path = subtitle_audio_dir / "speech_60s.wav"
+    if not path.exists():
+        pytest.fail(f"Subtitle audio not found: {path}  (run: python E2Etest/download_test_audio.py --subtitle-only)")
+    return path
 
 
 # =============================================================================
@@ -469,6 +550,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "websocket: marks tests as WebSocket tests")
     config.addinivalue_line("markers", "integration: marks tests as integration tests")
     config.addinivalue_line("markers", "requires_gpu: marks tests that require GPU")
+    config.addinivalue_line("markers", "requires_aligner: marks tests that require Qwen3-ForcedAligner-0.6B")
     config.addinivalue_line("markers", "subtitle: marks tests as subtitle tests")
 
 

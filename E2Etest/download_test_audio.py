@@ -157,5 +157,100 @@ def download_fleurs_samples():
         print(f"  {f.name} ({size_kb:.0f} KB)")
 
 
+def download_subtitle_samples():
+    """Download English FLEURS clips and assemble subtitle test audio files.
+
+    Produces three WAV files used exclusively by subtitle E2E tests:
+      data/audio/subtitle/speech_5s.wav   — ~5s  (1 clip, trimmed)
+      data/audio/subtitle/speech_20s.wav  — ~20s (several clips concatenated)
+      data/audio/subtitle/speech_60s.wav  — ~60s (many clips concatenated)
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("ERROR: 'datasets' package required. Install with:")
+        print("  pip install datasets")
+        return
+
+    base_dir = Path(__file__).parent
+    out_dir = base_dir / "data" / "audio" / "subtitle"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    targets = {
+        "speech_5s.wav":  5,
+        "speech_20s.wav": 20,
+        "speech_60s.wav": 60,
+    }
+
+    # Check if all targets already exist
+    if all((out_dir / name).exists() for name in targets):
+        print("Subtitle audio samples already present, skipping download.")
+        return
+
+    print("Downloading English FLEURS clips for subtitle tests...")
+    SR = 16000
+    clips: list[np.ndarray] = []
+
+    try:
+        ds = load_dataset(
+            "google/fleurs",
+            "en_us",
+            split="test",
+            streaming=True,
+            trust_remote_code=True,
+        )
+        target_secs = 80  # collect a bit more than 60s to be safe
+        collected = 0.0
+        for sample in ds:
+            if collected >= target_secs:
+                break
+            audio_data = sample["audio"]
+            array = np.array(audio_data["array"], dtype=np.float32)
+            sr = audio_data["sampling_rate"]
+            if sr != SR:
+                new_len = int(len(array) * SR / sr)
+                old_idx = np.linspace(0, len(array) - 1, len(array))
+                new_idx = np.linspace(0, len(array) - 1, new_len)
+                array = np.interp(new_idx, old_idx, array).astype(np.float32)
+            clips.append(array)
+            collected += len(array) / SR
+            print(f"  Clip {len(clips)}: {len(array)/SR:.1f}s  (total {collected:.1f}s)")
+    except Exception as e:
+        print(f"  ERROR downloading FLEURS: {e}")
+        return
+
+    if not clips:
+        print("  No clips downloaded.")
+        return
+
+    full = np.concatenate(clips)
+
+    for fname, secs in targets.items():
+        path = out_dir / fname
+        if path.exists():
+            continue
+        samples = SR * secs
+        chunk = full[:samples]
+        # Pad with silence if we didn't get enough
+        if len(chunk) < samples:
+            chunk = np.concatenate([chunk, np.zeros(samples - len(chunk), dtype=np.float32)])
+        sf.write(str(path), chunk, SR, subtype="PCM_16")
+        print(f"  Saved {path.name} ({secs}s)")
+
+    print("Subtitle audio samples ready:", out_dir)
+
+
 if __name__ == "__main__":
-    download_fleurs_samples()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--subtitle-only", action="store_true")
+    parser.add_argument("--all", action="store_true")
+    args = parser.parse_args()
+
+    if args.subtitle_only:
+        download_subtitle_samples()
+    elif args.all:
+        download_fleurs_samples()
+        download_subtitle_samples()
+    else:
+        download_fleurs_samples()

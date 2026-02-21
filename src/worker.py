@@ -33,7 +33,8 @@ app = FastAPI(title="Qwen3-ASR Worker")
 
 @app.on_event("startup")
 async def startup():
-    """Load model eagerly on worker startup."""
+    """Start inference queue and load model eagerly on worker startup."""
+    _infer_queue.start()
     await _ensure_model_loaded()
 
 
@@ -83,11 +84,21 @@ async def generate_subtitles(
     """Subtitle generation -- worker-side endpoint."""
     from fastapi.responses import Response
 
+    if mode not in ("accurate", "fast"):
+        return JSONResponse(status_code=400, content={"error": f"Invalid mode: {mode!r}. Must be 'accurate' or 'fast'."})
+
     await _ensure_model_loaded()
 
     audio_bytes = await file.read()
+    if not audio_bytes:
+        return JSONResponse(status_code=400, content={"error": "Empty audio file"})
+
     import soundfile as sf
-    audio, sr = sf.read(io.BytesIO(audio_bytes))
+    try:
+        audio, sr = sf.read(io.BytesIO(audio_bytes))
+    except Exception as e:
+        return JSONResponse(status_code=422, content={"error": f"Could not decode audio: {e}"})
+
     lang_code = None if language == "auto" else language
 
     if mode == "accurate":

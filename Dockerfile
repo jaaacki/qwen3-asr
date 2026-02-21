@@ -49,6 +49,7 @@ RUN pip install --no-cache-dir flash-attn --no-build-isolation
 COPY src/server.py /app/server.py
 COPY src/gateway.py /app/gateway.py
 COPY src/worker.py /app/worker.py
+COPY src/subtitle.py /app/subtitle.py
 COPY src/build_trt.py /app/build_trt.py
 
 EXPOSE 8000

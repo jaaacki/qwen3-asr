@@ -135,6 +135,9 @@ async def generate_subtitles(
     async with aiohttp.ClientSession() as session:
         async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
             _last_used = time.time()
+            if resp.status != 200:
+                body = await resp.text()
+                return JSONResponse(status_code=resp.status, content={"error": body})
             srt_content = await resp.text()
             return Response(
                 content=srt_content,

@@ -319,7 +319,6 @@ def load_aligner():
         device_map="cuda" if torch.cuda.is_available() else "cpu",
         trust_remote_code=True,
     )
-    _aligner.eval()
     print("ForcedAligner loaded")
 
 
