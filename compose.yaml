@@ -1,8 +1,9 @@
 services:
   qwen3-asr:
-    build: .
+    build:
+      context: .
     image: qwen3-asr-local:cuda124
-    container_name: qwen3_asr
+    container_name: qwen3-asr
     restart: unless-stopped
     ports:
       - "${PORT:-8100}:8000"
@@ -10,6 +11,13 @@ services:
       - ./models:/root/.cache/huggingface
     env_file:
       - .env
+    networks:
+      - qwen3-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     deploy:
       resources:
         reservations:
@@ -23,3 +31,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 120s
+
+networks:
+  qwen3-net:
+    driver: bridge
+    name: qwen3-net
