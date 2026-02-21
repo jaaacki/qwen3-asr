@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.0 — 2026-02-22
+
+### Added
+- **Unified Structured Logging** — Replaced all built-in `print()` and standard `logging` instances with `loguru`. (#87)
+- **FastAPI / Uvicorn Log Interception** — Custom `InterceptHandler` automatically maps uvicorn access and error logs to seamlessly conform to `loguru`'s structured JSON architecture to prevent blind spots. (#88)
+
 ## v0.6.2 — 2026-02-21
 
 ### Added

@@ -66,8 +66,8 @@ Issues ordered by dependency:
 _The system adopts Loguru for structured logging across all processes to enhance debugging and observability._
 
 Issues ordered by dependency:
-- [ ] #87 [Enhancement] Integrate Loguru for unified structured logging
-- [ ] #88 [Enhancement] Intercept FastAPI & Uvicorn logs into Loguru
+- [x] #87 [Enhancement] Integrate Loguru for unified structured logging
+- [x] #88 [Enhancement] Intercept FastAPI & Uvicorn logs into Loguru
 
 ## Backlog
 _Unplaced items or future considerations._
