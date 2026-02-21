@@ -12,7 +12,7 @@ services:
     env_file:
       - .env
     networks:
-      - qwen3-net
+      - qwen3-asr-net
     logging:
       driver: json-file
       options:
@@ -33,6 +33,6 @@ services:
       start_period: 120s
 
 networks:
-  qwen3-net:
+  qwen3-asr-net:
     driver: bridge
-    name: qwen3-net
+    name: qwen3-asr-net
