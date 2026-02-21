@@ -2,6 +2,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
+import sys
 import io
 import os
 import gc
@@ -554,9 +555,12 @@ app = FastAPI(title="Qwen3-ASR API", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
-    import torch
     gpu_info = {}
-    if torch.cuda.is_available():
+    # Only query GPU if torch is already imported (model loaded) — avoids
+    # importing torch (~2.4GB) just for a health check from a load balancer.
+    torch = sys.modules.get("torch")
+    cuda_available = torch.cuda.is_available() if torch is not None else False
+    if cuda_available and model is not None:
         gpu_info = {
             "gpu_name": torch.cuda.get_device_name(0),
             "gpu_allocated_mb": round(torch.cuda.memory_allocated() / 1024**2),
@@ -566,7 +570,7 @@ async def health():
         "status": "ok",
         "model_loaded": model is not None,
         "model_id": loaded_model_id,
-        "cuda": torch.cuda.is_available(),
+        "cuda": cuda_available,
         **gpu_info,
     }
 
