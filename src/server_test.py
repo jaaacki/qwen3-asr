@@ -71,15 +71,8 @@
 # Expected: eliminates one full buffer copy per WS chunk, same transcription quality
 
 # ─── Issue #15: Optimize WebSocket audio preprocessing path ───────────────
-# Change: Added preprocess_audio_ws() fast path that only does peak normalization.
-#         Replaced preprocess_audio(audio, TARGET_SR) call in _transcribe_with_context()
-#         with preprocess_audio_ws(audio) since WS audio is already mono, float32, 16kHz.
-# Verify:
-#   docker compose up -d --build
-#   # Use WebSocket client from docs/WEBSOCKET_USAGE.md to stream audio
-#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
-#   # Both HTTP and WS should produce correct transcriptions
-# Expected: faster WS transcription (skips redundant mono/resample/cast), same quality
+# Change: (Superseded by #82) preprocess_audio_ws() removed — SDK handles normalization.
+# Verify: WS transcription still works correctly after SDK cleanup.
 
 # ─── Issue #20: Disable WebSocket per-message-deflate compression ──────────
 # Change: Added --ws websockets to uvicorn CMD in Dockerfile.
@@ -159,11 +152,9 @@
 # Expected: progressive results with chunk_index, is_final on last chunk
 
 # ─── Issue #24: Long audio chunking at silence boundaries ────────────
-# Change: Added chunk_audio_at_silence() for files >25s. Splits at silence
-#         boundaries, transcribes each chunk, joins results.
-# Verify: Upload a >30s audio file
-#   curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@long_audio.wav"
-# Expected: correct transcription without quality degradation
+# Change: (Superseded by #82) chunk_audio_at_silence() removed — SDK's
+#         split_audio_into_chunks() handles this internally with superior algorithm.
+# Verify: Long audio transcription still works correctly after SDK cleanup.
 
 # ─── Issue #25: Silero VAD ───────────────────────────────────────────
 # Change: WS transcription skips silent frames
@@ -281,7 +272,7 @@ def test_worker_reuses_server_code():
     """Verify worker imports from server.py rather than duplicating."""
     import worker
     import server
-    assert worker.preprocess_audio is server.preprocess_audio
+    assert worker._do_transcribe is server._do_transcribe
 
 # ─── Issue #36: vLLM engine backend ──────────────────────────────────
 # Change: USE_VLLM=true enables vLLM engine for inference (requires vllm pip package)
