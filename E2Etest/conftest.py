@@ -69,6 +69,7 @@ class MarkdownReportGenerator:
             "test_performance": "Performance",
             "test_integration": "Integration",
             "test_accuracy": "Accuracy",
+            "test_subtitle": "Subtitle",
         }
         for key, label in mapping.items():
             if key in fname:
@@ -424,6 +425,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "websocket: marks tests as WebSocket tests")
     config.addinivalue_line("markers", "integration: marks tests as integration tests")
     config.addinivalue_line("markers", "requires_gpu: marks tests that require GPU")
+    config.addinivalue_line("markers", "subtitle: marks tests as subtitle tests")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -436,3 +438,5 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.smoke)
         if "websocket" in item.nodeid or "ws" in item.nodeid:
             item.add_marker(pytest.mark.websocket)
+        if "subtitle" in item.nodeid:
+            item.add_marker(pytest.mark.subtitle)

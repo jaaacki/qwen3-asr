@@ -10,6 +10,7 @@ Wraps Qwen3-ASR-1.7B in a production-ready FastAPI server with real-time WebSock
 - OpenAI-compatible `/v1/audio/transcriptions` endpoint (WAV, MP3, FLAC, …)
 - Server-Sent Events streaming via `/v1/audio/transcriptions/stream`
 - Real-time WebSocket transcription via `/ws/transcribe` with overlap and silence padding
+- SRT subtitle generation via `/v1/audio/subtitles` with accurate (ForcedAligner) and fast (heuristic) modes
 - Multi-language support with auto-detection
 - On-demand model loading with idle auto-unload (0 VRAM when idle)
 
@@ -100,6 +101,31 @@ curl -X POST http://localhost:8100/v1/audio/transcriptions \
 
 Same parameters, returns chunked SSE stream. Long audio (>25s) is split at silence boundaries for progressive output.
 
+### `POST /v1/audio/subtitles`
+
+Generate SRT subtitle file from audio.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `file` | file | required | Audio file (WAV, MP3, FLAC, ...) |
+| `language` | string | `"auto"` | Language code or `"auto"` |
+| `mode` | string | `"accurate"` | `"accurate"` (ForcedAligner) or `"fast"` (heuristic) |
+| `max_line_chars` | int | `42` | Maximum characters per subtitle line |
+
+```bash
+# Fast mode (no aligner needed, instant)
+curl -X POST http://localhost:8100/v1/audio/subtitles \
+  -F "file=@recording.wav" \
+  -F "mode=fast" \
+  -o subtitles.srt
+
+# Accurate mode (loads ForcedAligner on first call, ~33ms word accuracy)
+curl -X POST http://localhost:8100/v1/audio/subtitles \
+  -F "file=@recording.wav" \
+  -F "mode=accurate" \
+  -o subtitles.srt
+```
+
 ### `WS /ws/transcribe`
 
 Real-time WebSocket transcription. See [docs/WEBSOCKET_USAGE.md](docs/WEBSOCKET_USAGE.md).
@@ -116,6 +142,7 @@ Real-time WebSocket transcription. See [docs/WEBSOCKET_USAGE.md](docs/WEBSOCKET_
 | `WS_BUFFER_SIZE` | `14400` | WebSocket buffer bytes (~450ms at 16kHz) |
 | `WS_OVERLAP_SIZE` | `4800` | Overlap bytes between chunks (~150ms) |
 | `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush (ms) |
+| `FORCED_ALIGNER_ID` | `Qwen/Qwen3-ForcedAligner-0.6B` | HuggingFace model for subtitle alignment |
 
 ### Performance
 
@@ -156,7 +183,8 @@ qwen3-asr/
 ├── compose.yaml          # Docker Compose configuration
 ├── Dockerfile            # Container build definition
 ├── src/
-│   ├── server.py         # FastAPI server (~900 lines)
+│   ├── server.py         # FastAPI server (~1100 lines)
+│   ├── subtitle.py       # Subtitle generation (aligner, segmentation, SRT)
 │   ├── gateway.py        # Gateway proxy (GATEWAY_MODE=true)
 │   ├── worker.py         # Inference worker subprocess
 │   ├── export_onnx.py    # Export encoder to ONNX Runtime

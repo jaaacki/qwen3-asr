@@ -114,6 +114,35 @@ async def transcribe(
     return await _proxy_transcribe(audio_bytes, language, return_timestamps)
 
 
+@app.post("/v1/audio/subtitles")
+async def generate_subtitles(
+    file: UploadFile = File(...),
+    language: str = Form("auto"),
+    mode: str = Form("accurate"),
+    max_line_chars: int = Form(42),
+):
+    """Proxy subtitle generation to worker."""
+    from fastapi.responses import Response
+
+    global _last_used
+    await _ensure_worker()
+    url = f"http://{WORKER_HOST}:{WORKER_PORT}/subtitles"
+    form = aiohttp.FormData()
+    form.add_field("file", await file.read(), filename="audio.wav", content_type="audio/wav")
+    form.add_field("language", language)
+    form.add_field("mode", mode)
+    form.add_field("max_line_chars", str(max_line_chars))
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
+            _last_used = time.time()
+            srt_content = await resp.text()
+            return Response(
+                content=srt_content,
+                media_type="text/plain; charset=utf-8",
+                headers={"Content-Disposition": 'attachment; filename="subtitles.srt"'},
+            )
+
+
 @app.post("/v1/audio/transcriptions/stream")
 async def transcribe_stream(
     file: UploadFile = File(...),

@@ -30,6 +30,12 @@ curl -X POST http://localhost:8100/v1/audio/transcriptions -F "file=@audio.wav"
 # SSE streaming transcription
 curl -X POST http://localhost:8100/v1/audio/transcriptions/stream -F "file=@audio.wav"
 
+# Generate subtitles (fast mode, no aligner needed)
+curl -X POST http://localhost:8100/v1/audio/subtitles -F "file=@audio.wav" -F "mode=fast" -o subtitles.srt
+
+# Generate subtitles (accurate mode, loads ForcedAligner on first call)
+curl -X POST http://localhost:8100/v1/audio/subtitles -F "file=@audio.wav" -F "mode=accurate" -o subtitles.srt
+
 # Debug audio processing locally
 python src/debug_audio.py
 ```
@@ -58,7 +64,7 @@ pytest E2Etest/test_api_http.py -v
 pytest E2Etest/test_api_http.py::TestHealthEndpoint::test_health_returns_ok -v
 ```
 
-Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accuracy`, `requires_gpu`. Timeout is 300s per test. Async mode is auto (pytest-asyncio).
+Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accuracy`, `subtitle`, `requires_gpu`. Timeout is 300s per test. Async mode is auto (pytest-asyncio).
 
 ## Architecture
 
@@ -67,9 +73,10 @@ Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accur
 - `src/server.py` — Core FastAPI server with inference logic, priority queue, WebSocket handling (~1060 lines)
 - `src/gateway.py` — Gateway proxy mode (GATEWAY_MODE=true); routes to worker subprocess
 - `src/worker.py` — Inference worker for gateway mode; imports logic from server.py
+- `src/subtitle.py` — Subtitle generation module: ForcedAligner, segmentation, SRT formatting
 - `src/export_onnx.py` — Export encoder to ONNX for ORT acceleration
 - `src/build_trt.py` — Build TensorRT engine for encoder
-- `E2Etest/` — pytest-based E2E test suite (test_api_http, test_websocket, test_performance, test_integration, test_accuracy)
+- `E2Etest/` — pytest-based E2E test suite (test_api_http, test_websocket, test_performance, test_integration, test_accuracy, test_subtitle)
 
 ### API Endpoints
 
@@ -78,6 +85,7 @@ Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accur
 | `/health` | GET | Health check, returns model status and config |
 | `/v1/audio/transcriptions` | POST | File upload transcription (OpenAI-compatible) |
 | `/v1/audio/transcriptions/stream` | POST | SSE streaming transcription (chunks long audio at silence boundaries) |
+| `/v1/audio/subtitles` | POST | SRT subtitle generation (accurate + fast modes) |
 | `/ws/transcribe` | WebSocket | Real-time streaming with raw PCM input |
 
 ### Concurrency Model
@@ -152,6 +160,7 @@ All Phase 3 features are gated behind environment variables — safe to experime
 | `GATEWAY_MODE` | `false` | Run as gateway+worker split |
 | `DUAL_MODEL` | `false` | Load both 0.6B and 1.7B models |
 | `QUANTIZE` | `""` | `int8` or `fp8` |
+| `FORCED_ALIGNER_ID` | `Qwen/Qwen3-ForcedAligner-0.6B` | HuggingFace model for word-level alignment |
 
 Port mapping: container 8000 → host 8100.
 
@@ -165,6 +174,6 @@ Base image: `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel`. The `devel` variant i
 - `docs/GRANIAN_BENCHMARK.md` — Performance comparison of ASGI servers
 - `RESEARCH_ANALYSIS.md` — Architecture comparison with official Qwen3-ASR SDK and vLLM backend
 - `improvements.md` — Prioritized optimization recommendations (includes WebSocket critical path latency analysis)
-- `ROADMAP.md` — Milestone planning (3 phases, all completed)
+- `ROADMAP.md` — Milestone planning (4 phases, all completed)
 - `CHANGELOG.md` — Version history
 - `LEARNING_LOG.md` — Technical learnings and decisions

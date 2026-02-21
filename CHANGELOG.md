@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.6.2 — 2026-02-21
+
+### Added
+- **SRT subtitle generation** — new `POST /v1/audio/subtitles` endpoint with two modes (#83):
+  - **Accurate mode**: Qwen3-ForcedAligner-0.6B for word-level timestamps (~33ms accuracy), lazy-loaded on first request (~2GB VRAM)
+  - **Fast mode**: heuristic word timestamps estimated from segment duration proportional to character count (no aligner, no extra VRAM)
+- **Subtitle segmentation engine** — groups words into subtitle blocks respecting max line length (42 chars), max duration (7s), sentence boundaries, and long pauses (>500ms) (#83)
+- **CJK tokenization** — character-level splitting for Chinese, Japanese, Korean text with mixed CJK/Latin support (#83)
+- **Two-line subtitle splitting** — prefers clause boundaries, conjunctions/prepositions, and bottom-heavy layout (#83)
+- **Timing enforcement** — minimum subtitle duration (833ms), minimum gap (83ms), overlap fixing (#83)
+- **ForcedAligner lifecycle** — lazy-loaded on first accurate-mode request, unloaded alongside main model on idle timeout (#83)
+- **Gateway/worker proxy** — subtitle endpoint forwarded in GATEWAY_MODE (#83)
+- **E2E subtitle tests** — 10 tests covering fast/accurate modes, SRT structure, line length, overlaps, error handling (#83)
+
+### New Files
+- `src/subtitle.py` — subtitle generation module (~500 lines)
+- `src/subtitle_test.py` — 41 unit tests
+- `E2Etest/test_subtitle.py` — 10 E2E tests
+
 ## v0.6.1 — 2026-02-21
 
 ### Memory & Performance

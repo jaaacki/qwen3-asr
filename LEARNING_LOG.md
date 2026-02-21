@@ -4,6 +4,36 @@ Running narrative of decisions, patterns, and lessons.
 
 ---
 
+## 2026-02-21 — Why this design: Subtitle generation as separate module (Issue #83)
+
+**Type**: Why this design
+**Related**: Issue #83, v0.6.2
+
+### Context
+Users need SRT subtitle files from audio transcriptions. The ASR model produces segment-level text, but subtitles require word-level timestamps, line-length constraints, and proper timing. Two accuracy levels are needed: production-grade (ForcedAligner) and lightweight (heuristic).
+
+### Decision: Separate subtitle.py module
+All subtitle logic lives in `src/subtitle.py` rather than being embedded in `server.py`. Reasons:
+1. **Testability** — 41 unit tests run without FastAPI, GPU, or model dependencies. Pure functions with clear inputs/outputs.
+2. **Independence** — subtitle segmentation, timing enforcement, and SRT formatting have no coupling to the HTTP server or inference queue.
+3. **ForcedAligner lifecycle** — the aligner is a separate 2GB model with its own load/unload cycle. Keeping it in a module-level global with `load_aligner()`/`unload_aligner()` functions lets server.py manage it alongside the main model's idle timeout.
+
+### Decision: Two-mode design (accurate vs fast)
+- **Accurate mode**: Uses Qwen3-ForcedAligner-0.6B for ~33ms word-level timestamps. Lazy-loaded on first request. Handles the 5-minute aligner limit by chunking audio at boundaries and falling back to heuristic estimation per-chunk if alignment fails.
+- **Fast mode**: Distributes segment duration across words proportionally by character count. No aligner loaded, no extra VRAM, faster processing. ~200ms accuracy is sufficient for most subtitle use cases.
+
+The mode is a per-request parameter, not a server-wide config. Users can mix fast and accurate requests.
+
+### Decision: CJK tokenization
+CJK text (Chinese, Japanese, Korean) requires character-level tokenization for subtitle segmentation, unlike English which uses whitespace. The `_tokenize()` function detects CJK characters and splits them individually while keeping Latin words intact for mixed-language text. The subtitle joiner is empty string for CJK vs space for Latin. This was identified by the critic review and added in the corrections round.
+
+### What could go wrong
+- **ForcedAligner version mismatch**: The aligner expects the same text format as the ASR model output. If the ASR model's tokenization changes, alignment could silently degrade.
+- **Long audio chunk stitching**: When audio exceeds 5 minutes, each chunk is aligned independently. Word timestamps at chunk boundaries may have discontinuities. The per-chunk fallback to heuristic estimation prevents crashes but reduces accuracy.
+- **CJK subtitle length**: CJK characters are typically 2 display columns wide but counted as 1 char. The 42-char max_line_chars may produce visually long lines for CJK. A future enhancement could use display width instead of character count.
+
+---
+
 ## 2026-02-21 — Why this design: Lazy imports + SDK cleanup (Issue #82)
 
 **Type**: Why this design
