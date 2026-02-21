@@ -583,33 +583,26 @@ async def transcribe(
 
     audio_bytes = await file.read()
     audio, sr = sf.read(io.BytesIO(audio_bytes))
-    audio, sr = preprocess_audio(audio, sr)
-
-    # Split long audio at silence boundaries
-    if len(audio) > TARGET_SR * 25:
-        audio_chunks = chunk_audio_at_silence(audio, sr)
-    else:
-        audio_chunks = [audio]
 
     lang_code = None if language == "auto" else language
 
-    all_texts = []
-    for chunk in audio_chunks:
-        try:
-            results = await asyncio.wait_for(
-                _infer_queue.submit(
-                    lambda c=chunk: _do_transcribe(c, sr, lang_code, return_timestamps),
-                    priority=1,  # HTTP = lower priority
-                ),
-                timeout=REQUEST_TIMEOUT,
-            )
-            if results and len(results) > 0:
-                all_texts.append(results[0].text)
-        except asyncio.TimeoutError:
-            return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+    try:
+        results = await asyncio.wait_for(
+            _infer_queue.submit(
+                lambda: _do_transcribe(audio, sr, lang_code, return_timestamps),
+                priority=1,  # HTTP = lower priority
+            ),
+            timeout=REQUEST_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
-    text = detect_and_fix_repetitions(" ".join(all_texts))
-    language_code = lang_code or language
+    if results and len(results) > 0:
+        text = detect_and_fix_repetitions(results[0].text)
+        language_code = results[0].language
+    else:
+        text = ""
+        language_code = lang_code or language
 
     return {"text": text, "language": language_code}
 
@@ -816,7 +809,6 @@ async def transcribe_stream(
 
     audio_bytes = await file.read()
     audio, sr = sf.read(io.BytesIO(audio_bytes))
-    audio, sr = preprocess_audio(audio, sr)
 
     lang_code = None if language == "auto" else language
 
@@ -1022,8 +1014,6 @@ async def _transcribe_with_context(
         audio = np.frombuffer(full_audio, dtype=np.int16)
         audio = audio.astype(np.float32) / 32768.0
 
-        # Fast path: WS audio is already mono, float32, at 16kHz
-        audio = preprocess_audio_ws(audio)
         sr = TARGET_SR
 
         # VAD gate: skip inference if no speech detected
