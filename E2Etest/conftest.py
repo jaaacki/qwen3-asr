@@ -96,6 +96,32 @@ class MarkdownReportGenerator:
                     })
         return metrics
 
+    def _parse_accuracy_metrics(self) -> list[dict]:
+        """Extract accuracy metrics (WER/CER) from stdout of accuracy tests."""
+        metrics = []
+        for r in self.results:
+            if not r["stdout"]:
+                continue
+            lines = r["stdout"].splitlines()
+            entry: dict = {"test": r["nodeid"].split("::")[-1], "status": r["outcome"]}
+            for line in lines:
+                lang_m = re.match(r"Language:\s*(.+)", line)
+                if lang_m:
+                    entry["language"] = lang_m.group(1).strip()
+                wer_m = re.match(r"(WER|CER):\s*([\d.]+)%", line)
+                if wer_m:
+                    entry["metric"] = wer_m.group(1)
+                    entry["value"] = float(wer_m.group(2))
+                ref_m = re.match(r"Reference:\s*(.+)", line)
+                if ref_m:
+                    entry["reference"] = ref_m.group(1).strip()
+                hyp_m = re.match(r"Hypothesis:\s*(.+)", line)
+                if hyp_m:
+                    entry["hypothesis"] = hyp_m.group(1).strip()
+            if "language" in entry and "metric" in entry:
+                metrics.append(entry)
+        return metrics
+
     def generate(self, output_dir: Path) -> Path:
         """Write the markdown report and return the file path."""
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -139,6 +165,22 @@ class MarkdownReportGenerator:
             lines.append("|------|--------|-------|")
             for pm in perf_metrics:
                 lines.append(f"| {pm['test']} | {pm['metric']} | {pm['value']:.2f}s |")
+            lines.append("")
+
+        # --- Accuracy Breakdown ---
+        accuracy_metrics = self._parse_accuracy_metrics()
+        if accuracy_metrics:
+            lines.append("## Accuracy Breakdown\n")
+            lines.append("| Language | Metric | Score | Status | Reference | Hypothesis |")
+            lines.append("|----------|--------|-------|--------|-----------|------------|")
+            for am in accuracy_metrics:
+                lang = am.get("language", "?")
+                metric = am.get("metric", "?")
+                value = f"{am.get('value', 0):.1f}%"
+                status = am.get("status", "?").upper()
+                ref = am.get("reference", "")[:80]
+                hyp = am.get("hypothesis", "")[:80]
+                lines.append(f"| {lang} | {metric} | {value} | {status} | {ref} | {hyp} |")
             lines.append("")
 
         # --- Results by Category ---
@@ -208,9 +250,11 @@ def pytest_runtest_makereport(item, call):
     rep = outcome.get_result()
     # Only record the "call" phase (not setup/teardown), or skip from setup
     if rep.when == "call" or (rep.when == "setup" and rep.skipped):
+        # Extract captured stdout from rep.sections
         stdout = ""
-        if hasattr(rep, "capstdout"):
-            stdout = rep.capstdout or ""
+        for section_name, section_content in rep.sections:
+            if "stdout" in section_name.lower():
+                stdout += section_content
         _report_generator.add_result(
             nodeid=rep.nodeid,
             outcome=rep.outcome,
