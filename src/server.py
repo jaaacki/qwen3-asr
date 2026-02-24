@@ -128,6 +128,11 @@ WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.15)
 # Gives the model trailing context to commit the last word
 WS_FLUSH_SILENCE_MS = int(os.getenv("WS_FLUSH_SILENCE_MS", "600"))
 
+# Sliding window: max seconds of audio to keep for re-transcription
+# Larger = more context = better accuracy, but higher GPU cost per trigger
+WS_WINDOW_MAX_S = float(os.getenv("WS_WINDOW_MAX_S", "6.0"))
+WS_WINDOW_MAX_BYTES = int(WS_WINDOW_MAX_S * TARGET_SR * 2)  # 16-bit PCM
+
 # Speculative decoding: use 0.6B as draft, 1.7B as verifier
 USE_SPECULATIVE = os.getenv("USE_SPECULATIVE", "").lower() == "true"
 
