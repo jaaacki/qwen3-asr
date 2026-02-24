@@ -120,7 +120,11 @@ async def transcribe(
     return_timestamps: bool = Form(False, description="Whether to include word-level timestamps in the response text"),
 ):
     audio_bytes = await file.read()
-    return await _proxy_transcribe(audio_bytes, language, return_timestamps)
+    log.info("Gateway POST /v1/audio/transcriptions | size={} language={}", len(audio_bytes), language)
+    t0 = time.time()
+    result = await _proxy_transcribe(audio_bytes, language, return_timestamps)
+    log.info("Gateway POST /v1/audio/transcriptions | proxied in {:.2f}s", time.time() - t0)
+    return result
 
 
 @app.post(
@@ -138,23 +142,29 @@ async def translate(
     from fastapi.responses import Response
     global _last_used
     await _ensure_worker()
-    
+
+    content = await file.read()
+    log.info("Gateway POST /v1/audio/translations | size={} target={} format={}", len(content), language, response_format)
+    t0 = time.time()
+
     # Restrict to en/zh only
     target_lang = "en" if language.lower() not in ["en", "zh"] else language.lower()
-    
+
     url = f"http://{WORKER_HOST}:{WORKER_PORT}/translate"
     form = aiohttp.FormData()
-    form.add_field("file", await file.read(), filename="audio.wav", content_type="audio/wav")
+    form.add_field("file", content, filename="audio.wav", content_type="audio/wav")
     form.add_field("language", target_lang)
     form.add_field("response_format", response_format)
-    
+
     async with aiohttp.ClientSession() as session:
         async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
             _last_used = time.time()
             if resp.status != 200:
                 body = await resp.text()
+                log.error("Gateway proxy error | url={} status={}", url, resp.status)
                 return JSONResponse(status_code=resp.status, content={"error": body})
-            
+
+            log.info("Gateway POST /v1/audio/translations | proxied in {:.2f}s", time.time() - t0)
             if response_format.lower() == "srt":
                 srt_content = await resp.text()
                 return Response(
@@ -178,9 +188,12 @@ async def generate_subtitles(
 
     global _last_used
     await _ensure_worker()
+    audio_bytes = await file.read()
+    log.info("Gateway POST /v1/audio/subtitles | size={} language={} mode={}", len(audio_bytes), language, mode)
+    t0 = time.time()
     url = f"http://{WORKER_HOST}:{WORKER_PORT}/subtitles"
     form = aiohttp.FormData()
-    form.add_field("file", await file.read(), filename="audio.wav", content_type="audio/wav")
+    form.add_field("file", audio_bytes, filename="audio.wav", content_type="audio/wav")
     form.add_field("language", language)
     form.add_field("mode", mode)
     form.add_field("max_line_chars", str(max_line_chars))
@@ -189,8 +202,10 @@ async def generate_subtitles(
             _last_used = time.time()
             if resp.status != 200:
                 body = await resp.text()
+                log.error("Gateway proxy error | url={} status={}", url, resp.status)
                 return JSONResponse(status_code=resp.status, content={"error": body})
             srt_content = await resp.text()
+            log.info("Gateway POST /v1/audio/subtitles | proxied in {:.2f}s", time.time() - t0)
             return Response(
                 content=srt_content,
                 media_type="text/plain; charset=utf-8",
@@ -208,6 +223,7 @@ async def transcribe_stream(
     global _last_used
     await _ensure_worker()
     audio_bytes = await file.read()
+    log.info("Gateway POST /v1/audio/transcriptions/stream | size={} language={}", len(audio_bytes), language)
     url = f"http://{WORKER_HOST}:{WORKER_PORT}/transcribe/stream"
     form = aiohttp.FormData()
     form.add_field("file", audio_bytes, filename="audio.wav", content_type="audio/wav")
@@ -233,6 +249,7 @@ async def websocket_proxy(websocket: WebSocket):
     """Proxy WebSocket transcription to worker."""
     global _last_used
     await websocket.accept()
+    log.info("[GW-WS] Client connected, proxying to worker")
 
     try:
         await _ensure_worker()
@@ -286,6 +303,7 @@ async def websocket_proxy(websocket: WebSocket):
         except Exception:
             pass
     finally:
+        log.info("[GW-WS] Proxy session ended")
         try:
             await websocket.close()
         except Exception:
@@ -295,6 +313,7 @@ async def websocket_proxy(websocket: WebSocket):
 @app.get("/health")
 async def health():
     worker_alive = _worker_proc is not None and _worker_proc.poll() is None
+    log.debug("Gateway GET /health | worker_alive={}", worker_alive)
     info = {"status": "ok", "mode": "gateway", "worker_alive": worker_alive, "model_loaded": False, "model_id": None}
     if worker_alive:
         try:
