@@ -105,6 +105,9 @@ _DURATION_SLAS: dict[str, float] = {
     "test_valid_block_structure": 60.0,
     "test_line_length_respected": 60.0,
     "test_multiple_events_long_audio": 90.0,
+    # Real-time benchmark
+    "test_english_realtime_benchmark": 120.0,
+    "test_chinese_realtime_benchmark": 120.0,
 }
 _DEFAULT_SLA = 30.0
 
@@ -167,6 +170,7 @@ class MarkdownReportGenerator:
             "test_integration": "Integration",
             "test_accuracy": "Accuracy",
             "test_subtitle": "Subtitle",
+            "test_realtime_accuracy": "Realtime",
         }
         for key, label in mapping.items():
             if key in fname:
@@ -258,6 +262,48 @@ class MarkdownReportGenerator:
                 if m:
                     entry["first_event"] = m.group(1).strip()
             if any(k in entry for k in ("events", "first_event", "max_duration")):
+                results.append(entry)
+        return results
+
+    def _parse_realtime_metrics(self) -> list[dict]:
+        """Extract per-test realtime latency metrics printed by test_realtime_accuracy."""
+        results = []
+        for r in self.results:
+            if "test_realtime_accuracy" not in r["nodeid"] or not r["stdout"]:
+                continue
+            entry: dict = {
+                "test": r["nodeid"].split("::")[-1],
+                "status": r["outcome"],
+            }
+            for line in r["stdout"].splitlines():
+                m = re.match(r"Language:\s*(.+)", line)
+                if m:
+                    entry["language"] = m.group(1).strip()
+                m = re.match(r"WER:\s*([\d.]+)%", line)
+                if m:
+                    entry["wer"] = float(m.group(1))
+                m = re.match(r"CER:\s*([\d.]+)%", line)
+                if m:
+                    entry["cer"] = float(m.group(1))
+                m = re.match(r"Realtime Chunk Median:\s*([\d.]+)ms", line)
+                if m:
+                    entry["median_ms"] = float(m.group(1))
+                m = re.match(r"Realtime Chunk P95:\s*([\d.]+)ms", line)
+                if m:
+                    entry["p95_ms"] = float(m.group(1))
+                m = re.match(r"Realtime Flush Latency:\s*([\d.]+)ms", line)
+                if m:
+                    entry["flush_ms"] = float(m.group(1))
+                m = re.match(r"Realtime RTF:\s*([\d.]+)x", line)
+                if m:
+                    entry["rtf"] = float(m.group(1))
+                m = re.match(r"Reference:\s*(.+)", line)
+                if m:
+                    entry["reference"] = m.group(1).strip()
+                m = re.match(r"Hypothesis:\s*(.+)", line)
+                if m:
+                    entry["hypothesis"] = m.group(1).strip()
+            if "wer" in entry or "median_ms" in entry:
                 results.append(entry)
         return results
 
@@ -372,6 +418,28 @@ class MarkdownReportGenerator:
                 max_line = f"{s['max_line']} chars" if "max_line" in s else "—"
                 first    = s.get("first_event", "—")[:60]
                 lines.append(f"| `{name}` | {audio} | {events} | {max_dur} | {max_line} | {first} |")
+            lines.append("")
+
+        # -- Real-Time Benchmark ----------------------------------------------
+        rt_metrics = self._parse_realtime_metrics()
+        if rt_metrics:
+            lines.append("## ⚡ Real-Time Benchmark\n")
+            lines.append("| Test | Lang | WER | CER | Median | P95 | Flush | RTF |")
+            lines.append("|------|------|-----|-----|--------|-----|-------|-----|")
+            for m in rt_metrics:
+                ok_icon = "✅" if m["status"] == "passed" else "❌"
+                rtf_val = m.get("rtf", 0.0)
+                rtf_icon = "✓" if rtf_val < 1.0 else "✗"
+                lines.append(
+                    f"| {ok_icon} `{m['test']}` "
+                    f"| {m.get('language', '?')} "
+                    f"| {m.get('wer', 0.0):.1f}% "
+                    f"| {m.get('cer', 0.0):.1f}% "
+                    f"| {m.get('median_ms', 0.0):.0f}ms "
+                    f"| {m.get('p95_ms', 0.0):.0f}ms "
+                    f"| {m.get('flush_ms', 0.0):.0f}ms "
+                    f"| {rtf_val:.2f}× {rtf_icon} |"
+                )
             lines.append("")
 
         # ── Accuracy Breakdown ────────────────────────────────────────────────
