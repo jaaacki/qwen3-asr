@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.11.0 — 2026-02-24
+
+Comprehensive observability: every request in, every response out, every error caught — atomic loguru logging across the entire request chain.
+
+### Added
+- **Atomic request-level logging** — every HTTP endpoint and WebSocket handler logs entry (method, path, file size, params), exit (duration, result size), and errors with full context across server.py, worker.py, gateway.py, translator.py, and subtitle.py (#98)
+- **Configurable LOG_LEVEL** — `LOG_LEVEL` env var controls verbosity (DEBUG/INFO/WARNING/ERROR, default INFO) for both loguru and stdlib logging (#96)
+- **Ollama Cloud translation defaults** — `.env.example` ships with `OPENAI_BASE_URL=https://ollama.com/api` and `TRANSLATE_MODEL=gemma3:12b` for out-of-the-box translation support (#97)
+
+### Changed
+- **`.env.example` reorganized** — clearer section structure, inline documentation for WebSocket defaults, removed stale "feature branch" comment from translation section (#97)
+
 ## v0.10.1 — 2026-02-24
 
 ### Changed
