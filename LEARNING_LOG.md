@@ -251,3 +251,42 @@ The previous session merged PRs #72, #70, #67 into milestone/phase-3 locally but
 
 ### Lesson learned: opt-in via environment variables
 All Phase 3 features are gated by environment variables (USE_VLLM, USE_SPECULATIVE, USE_CAUSAL_ENCODER, TRT_ENCODER_PATH, NUMA_NODE, USE_GRANIAN, GATEWAY_MODE). This pattern kept the default behavior unchanged and avoided breaking changes. Each feature can be independently enabled for testing.
+
+---
+
+## 2026-02-24 — What just happened: Atomic logging across the full request chain (Issues #96–#98)
+
+**Type**: What just happened
+**Related**: Issues #96, #97, #98, v0.11.0. Builds on the loguru foundation from v0.9.0 (#87, #88).
+
+### Preamble
+After v0.9.0 replaced `print()` with loguru, the structured logging infrastructure existed but was barely used. Most endpoints had zero request-level logging — a transcription request would enter the system, pass through Gateway, Worker, and Server, and the only evidence in the logs was uvicorn's generic access log (`POST /v1/audio/transcriptions 200`). No file sizes, no durations, no error context, no trace of the request's path through the system. The translation endpoint was entirely invisible — code-complete since v0.8.0 but producing zero log output.
+
+### Pattern: entry/exit/duration on every endpoint
+Every HTTP handler and WebSocket handler now logs three things:
+1. **Entry** — method, path, key parameters (file size, language, mode, format)
+2. **Exit** — duration in milliseconds, result size or event count
+3. **Error** — full exception context with the parameters that caused it
+
+This gives instant debuggability. If a user reports "my 60s WAV file returned empty text," the logs show exactly what happened: file received (size), inference started (duration), what came back (result length). No guesswork, no reproducing.
+
+### Why loguru `{}` placeholders over f-strings
+All log calls use `log.info("Transcription complete | duration={dur:.0f}ms | length={length}", dur=elapsed, length=len(text))` instead of `log.info(f"Transcription complete | duration={elapsed:.0f}ms | length={len(text)}")`. The difference: with f-strings, Python formats the string unconditionally — even if the log level is WARNING and this INFO message will be discarded. With `{}` placeholders, loguru skips the string formatting entirely when the message won't be emitted. In a hot path handling hundreds of WebSocket chunks per second, this lazy evaluation avoids measurable overhead when running at WARNING level in production.
+
+### The request chain visibility
+With Gateway mode enabled, a single transcription request now produces a clear trace:
+- `gateway.py` — "Proxying POST /v1/audio/transcriptions | file_size=320044"
+- `worker.py` — "POST /v1/audio/transcriptions | file=recording.wav | size=320044 | language=auto"
+- `server.py` — "_do_transcribe | audio_samples=160000 | duration=10.0s"
+- `server.py` — "Transcription complete | duration=1247ms | length=42"
+- `worker.py` — "POST /v1/audio/transcriptions complete | duration=1253ms"
+- `gateway.py` — "Proxy complete | duration=1260ms | status=200"
+
+Each layer adds its own timing, so you can see exactly where time is spent: 6ms in gateway overhead, 6ms in worker overhead, 1247ms in actual inference.
+
+### LOG_LEVEL as env var
+`LOG_LEVEL` in `src/logger.py` reads the environment variable at import time and configures both loguru and stdlib logging to that level. Production deployments can run `LOG_LEVEL=WARNING` to suppress all the entry/exit chatter while keeping error visibility. Development and debugging use `LOG_LEVEL=DEBUG` for maximum detail. The default is `INFO` — a reasonable middle ground that shows request flow without overwhelming the logs.
+
+### What could go wrong
+- **Log volume at DEBUG level**: With atomic logging on every endpoint, DEBUG level in a high-traffic deployment could produce significant log volume. The lazy `{}` formatting helps, but the sheer number of log calls is still nonzero. Use WARNING in production if log storage is a concern.
+- **Timing overhead**: Each `time.time()` call adds ~100ns. With 4-6 timing points per request, that's ~0.5us — negligible compared to inference times measured in seconds, but worth noting for the WebSocket hot path where chunks arrive every 450ms.

@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from loguru import logger
 
@@ -27,17 +28,19 @@ class InterceptHandler(logging.Handler):
 
 def setup_logger():
     """Configure Loguru to intercept uvicorn and fastapi logs, and format them clearly."""
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+
     logging.root.handlers = [InterceptHandler()]
-    logging.root.setLevel(logging.INFO)
+    logging.root.setLevel(log_level)
 
     # Remove all loguru's default handlers
     logger.remove()
-    
+
     # Configure our own handler to sys.stderr with nice formatting
     logger.add(
         sys.stderr,
         format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        level="INFO",
+        level=log_level,
         colorize=True,
     )
 

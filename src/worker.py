@@ -20,6 +20,8 @@ from server import (
     WS_OVERLAP_SIZE,
 )
 import server as _srv
+from logger import log
+import time
 
 import asyncio
 import io
@@ -34,8 +36,10 @@ app = FastAPI(title="Qwen3-ASR Worker")
 @app.on_event("startup")
 async def startup():
     """Start inference queue and load model eagerly on worker startup."""
+    log.info("Worker starting up...")
     _infer_queue.start()
     await _ensure_model_loaded()
+    log.info("Worker ready")
 
 
 @app.post("/transcribe")
@@ -46,6 +50,8 @@ async def transcribe(
 ):
     await _ensure_model_loaded()
     audio_bytes = await file.read()
+    log.info("POST /transcribe | size={} language={}", len(audio_bytes), language)
+    t0 = time.time()
     import soundfile as sf
     audio, sr = sf.read(io.BytesIO(audio_bytes))
     lang_code = None if language == "auto" else language
@@ -59,6 +65,7 @@ async def transcribe(
             timeout=REQUEST_TIMEOUT,
         )
     except asyncio.TimeoutError:
+        log.warning("POST /transcribe | timed out after {:.2f}s", time.time() - t0)
         release_gpu_memory()
         return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
@@ -66,11 +73,13 @@ async def transcribe(
         text = detect_and_fix_repetitions(results[0].text)
         language_code = results[0].language
         if return_timestamps and hasattr(results[0], "timestamps") and results[0].timestamps:
+            log.info("POST /transcribe | completed in {:.2f}s text_len={}", time.time() - t0, len(text))
             return {"text": text, "language": language_code, "timestamps": results[0].timestamps}
     else:
         text = ""
         language_code = language
 
+    log.info("POST /transcribe | completed in {:.2f}s text_len={}", time.time() - t0, len(text))
     return {"text": text, "language": language_code}
 
 
@@ -93,10 +102,14 @@ async def generate_subtitles(
     if not audio_bytes:
         return JSONResponse(status_code=400, content={"error": "Empty audio file"})
 
+    log.info("POST /subtitles | size={} language={} mode={}", len(audio_bytes), language, mode)
+    t0 = time.time()
+
     import soundfile as sf
     try:
         audio, sr = sf.read(io.BytesIO(audio_bytes))
     except Exception as e:
+        log.error("POST /subtitles | audio decode failed: {}", e)
         return JSONResponse(status_code=422, content={"error": f"Could not decode audio: {e}"})
 
     lang_code = None if language == "auto" else language
@@ -114,6 +127,7 @@ async def generate_subtitles(
             timeout=REQUEST_TIMEOUT,
         )
     except asyncio.TimeoutError:
+        log.warning("POST /subtitles | timed out after {:.2f}s", time.time() - t0)
         release_gpu_memory()
         return JSONResponse(status_code=504, content={"error": "Subtitle generation timed out"})
 
@@ -136,6 +150,7 @@ async def generate_subtitles(
         ),
     )
 
+    log.info("POST /subtitles | completed in {:.2f}s mode={} srt_len={}", time.time() - t0, mode, len(srt_content))
     return Response(
         content=srt_content,
         media_type="text/plain; charset=utf-8",
@@ -158,10 +173,14 @@ async def translate(
     if not audio_bytes:
         return JSONResponse(status_code=400, content={"error": "Empty audio file"})
 
+    log.info("POST /translate | size={} target={} format={}", len(audio_bytes), language, response_format)
+    t0 = time.time()
+
     import soundfile as sf
     try:
         audio, sr = sf.read(io.BytesIO(audio_bytes))
     except Exception as e:
+        log.error("POST /translate | audio decode failed: {}", e)
         return JSONResponse(status_code=422, content={"error": f"Could not decode audio: {e}"})
 
     target_lang = "en" if language.lower() not in ["en", "zh"] else language.lower()
@@ -180,6 +199,7 @@ async def translate(
                 timeout=REQUEST_TIMEOUT,
             )
         except asyncio.TimeoutError:
+            log.warning("POST /translate | timed out after {:.2f}s", time.time() - t0)
             release_gpu_memory()
             return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
@@ -198,8 +218,10 @@ async def translate(
         try:
             translated_srt = await translate_srt(original_srt, target_lang)
         except Exception as e:
+            log.error("POST /translate | translation API failed: {}", e)
             return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
 
+        log.info("POST /translate | completed in {:.2f}s format={}", time.time() - t0, response_format)
         return Response(content=translated_srt, media_type="text/plain; charset=utf-8")
 
     else:
@@ -212,6 +234,7 @@ async def translate(
                 timeout=REQUEST_TIMEOUT,
             )
         except asyncio.TimeoutError:
+            log.warning("POST /translate | timed out after {:.2f}s", time.time() - t0)
             release_gpu_memory()
             return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
@@ -224,10 +247,12 @@ async def translate(
             try:
                 translated_text = await translate_text(text, target_lang)
             except Exception as e:
+                log.error("POST /translate | translation API failed: {}", e)
                 return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
         else:
             translated_text = ""
 
+        log.info("POST /translate | completed in {:.2f}s format={}", time.time() - t0, response_format)
         return {"text": translated_text, "language": target_lang}
 
 
@@ -240,6 +265,7 @@ async def transcribe_stream(
     """SSE streaming transcription -- worker-side endpoint."""
     await _ensure_model_loaded()
     audio_bytes = await file.read()
+    log.info("POST /transcribe/stream | size={} language={}", len(audio_bytes), language)
     import soundfile as sf
     audio, sr = sf.read(io.BytesIO(audio_bytes))
     lang_code = None if language == "auto" else language
@@ -256,12 +282,14 @@ async def transcribe_stream(
 @app.websocket("/ws/transcribe")
 async def websocket_transcribe(websocket: WebSocket):
     """WebSocket transcription -- worker-side, reuses server.py logic."""
+    log.info("[Worker-WS] Proxying WebSocket transcription to server handler")
     from server import websocket_transcribe as _ws_handler
     await _ws_handler(websocket)
 
 
 @app.get("/health")
 async def health():
+    log.debug("GET /health")
     return {
         "status": "ok",
         "mode": "worker",

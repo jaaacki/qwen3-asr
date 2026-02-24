@@ -138,9 +138,10 @@ Requires an OpenAI-compatible translation backend running.
 | `response_format` | string | `"json"` | `"json"` (text response) or `"srt"` (maintains timings) |
 
 ```bash
-# JSON raw text translation via standard proxy
-export OPENAI_API_KEY="your-key"
-export TRANSLATE_MODEL="gpt-4o-mini"
+# Ollama Cloud translation
+export OPENAI_API_KEY="your-ollama-api-key"
+export OPENAI_BASE_URL="https://ollama.com/api"
+export TRANSLATE_MODEL="gemma3:12b"
 curl -X POST http://localhost:8100/v1/audio/translations \
   -F "file=@recording.wav" \
   -F "language=zh"
@@ -168,6 +169,7 @@ Real-time WebSocket transcription. See [docs/WEBSOCKET_USAGE.md](docs/WEBSOCKET_
 |----------|---------|-------------|
 | `MODEL_ID` | `Qwen/Qwen3-ASR-1.7B` | HuggingFace model ID |
 | `IDLE_TIMEOUT` | `120` | Seconds before unloading model (0 = keep loaded) |
+| `LOG_LEVEL` | `INFO` | Log verbosity (DEBUG/INFO/WARNING/ERROR) |
 | `REQUEST_TIMEOUT` | `300` | Max seconds per inference request |
 | `WS_BUFFER_SIZE` | `14400` | WebSocket buffer bytes (~450ms at 16kHz) |
 | `WS_OVERLAP_SIZE` | `4800` | Overlap bytes between chunks (~150ms) |

@@ -589,6 +589,8 @@ async def transcribe(
     await _ensure_model_loaded()
 
     audio_bytes = await file.read()
+    log.info("POST /v1/audio/transcriptions | file={} size={} language={}", file.filename, len(audio_bytes), language)
+    t0 = time.time()
     import soundfile as sf
     audio, sr = sf.read(io.BytesIO(audio_bytes))
 
@@ -603,6 +605,7 @@ async def transcribe(
             timeout=REQUEST_TIMEOUT,
         )
     except asyncio.TimeoutError:
+        log.warning("POST /v1/audio/transcriptions | timed out after {:.2f}s", time.time() - t0)
         return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
     if results and len(results) > 0:
@@ -612,6 +615,7 @@ async def transcribe(
         text = ""
         language_code = lang_code or language
 
+    log.info("POST /v1/audio/transcriptions | completed in {:.2f}s text_len={} lang={}", time.time() - t0, len(text), language_code)
     return {"text": text, "language": language_code}
 
 
@@ -623,10 +627,12 @@ async def translate_endpoint(
 ):
     from fastapi.responses import Response
     from translator import translate_text, translate_srt
-    
+
     await _ensure_model_loaded()
 
     audio_bytes = await file.read()
+    log.info("POST /v1/audio/translations | file={} size={} target={} format={}", file.filename, len(audio_bytes), language, response_format)
+    t0 = time.time()
     import soundfile as sf
     audio, sr = sf.read(io.BytesIO(audio_bytes))
 
@@ -643,6 +649,7 @@ async def translate_endpoint(
                 timeout=REQUEST_TIMEOUT,
             )
         except asyncio.TimeoutError:
+            log.warning("POST /v1/audio/translations | timed out after {:.2f}s", time.time() - t0)
             return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
         if not results:
@@ -660,14 +667,16 @@ async def translate_endpoint(
         try:
             translated_srt = await translate_srt(original_srt, target_lang)
         except Exception as e:
+            log.error("POST /v1/audio/translations | translation API failed in {:.2f}s error={}", time.time() - t0, e)
             return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
 
+        log.info("POST /v1/audio/translations | completed in {:.2f}s format={}", time.time() - t0, response_format)
         return Response(
             content=translated_srt,
             media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="translated_subtitles.srt"'},
         )
-    
+
     else:
         # JSON standard text transcription -> translation
         try:
@@ -679,6 +688,7 @@ async def translate_endpoint(
                 timeout=REQUEST_TIMEOUT,
             )
         except asyncio.TimeoutError:
+            log.warning("POST /v1/audio/translations | timed out after {:.2f}s", time.time() - t0)
             return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
 
         if results and len(results) > 0:
@@ -690,10 +700,12 @@ async def translate_endpoint(
             try:
                 translated_text = await translate_text(text, target_lang)
             except Exception as e:
+                log.error("POST /v1/audio/translations | translation API failed in {:.2f}s error={}", time.time() - t0, e)
                 return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
         else:
             translated_text = ""
 
+        log.info("POST /v1/audio/translations | completed in {:.2f}s format={}", time.time() - t0, response_format)
         return {"text": translated_text, "language": target_lang}
 
 
@@ -715,6 +727,8 @@ async def generate_subtitles(
     await _ensure_model_loaded()
 
     audio_bytes = await file.read()
+    log.info("POST /v1/audio/subtitles | file={} size={} language={} mode={}", file.filename, len(audio_bytes), language, mode)
+    t0 = time.time()
     import soundfile as sf
     audio, sr = sf.read(io.BytesIO(audio_bytes))
 
@@ -735,6 +749,7 @@ async def generate_subtitles(
             timeout=REQUEST_TIMEOUT,
         )
     except asyncio.TimeoutError:
+        log.warning("POST /v1/audio/subtitles | timed out after {:.2f}s", time.time() - t0)
         return JSONResponse(status_code=504, content={"error": "Subtitle generation timed out"})
 
     if not results or len(results) == 0:
@@ -761,6 +776,7 @@ async def generate_subtitles(
         ),
     )
 
+    log.info("POST /v1/audio/subtitles | completed in {:.2f}s mode={} srt_len={}", time.time() - t0, mode, len(srt_content))
     return Response(
         content=srt_content,
         media_type="text/plain; charset=utf-8",
@@ -971,6 +987,7 @@ async def transcribe_stream(
     await _ensure_model_loaded()
 
     audio_bytes = await file.read()
+    log.info("POST /v1/audio/transcriptions/stream | file={} size={} language={}", file.filename, len(audio_bytes), language)
     import soundfile as sf
     audio, sr = sf.read(io.BytesIO(audio_bytes))
 
@@ -1004,6 +1021,7 @@ async def websocket_transcribe(websocket: WebSocket):
     # WS compression disabled via uvicorn --ws websockets (see Dockerfile CMD)
     # per-message-deflate would add ~1ms CPU overhead per frame
     await websocket.accept()
+    log.info("[WS] Client connected")
 
     # Audio buffer for accumulating incoming chunks
     audio_buffer = bytearray()
@@ -1013,6 +1031,8 @@ async def websocket_transcribe(websocket: WebSocket):
     lang_code: str | None = None
     # KV-cache state for cross-chunk encoder reuse
     _prev_encoder_out = None
+    # Counter for transcribed chunks
+    chunk_count = 0
 
     try:
         await _ensure_model_loaded()
@@ -1042,6 +1062,7 @@ async def websocket_transcribe(websocket: WebSocket):
                                 lang_code=lang_code,
                                 encoder_cache=_prev_encoder_out,
                             )
+                            chunk_count += 1
                             await websocket.send_json({
                                 "text": text,
                                 "is_partial": False,
@@ -1099,6 +1120,7 @@ async def websocket_transcribe(websocket: WebSocket):
                             lang_code=lang_code,
                             encoder_cache=_prev_encoder_out,
                         )
+                        chunk_count += 1
 
                         # Save tail of this chunk as overlap for next
                         overlap_len = min(WS_OVERLAP_SIZE, len(process_chunk))
@@ -1120,11 +1142,12 @@ async def websocket_transcribe(websocket: WebSocket):
                             lang_code=lang_code,
                             encoder_cache=_prev_encoder_out,
                         )
+                        chunk_count += 1
                         if text:
-                            log.info(f"[WS] Final transcription on disconnect: {text}")
+                            log.info("[WS] Final transcription on disconnect: {}", text)
                     except Exception:
                         pass
-                log.info("WebSocket client disconnected")
+                log.info("[WS] Client disconnected | chunks_processed={}", chunk_count)
                 break
 
     except Exception as e:

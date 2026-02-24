@@ -156,6 +156,7 @@ All Phase 3 features are gated behind environment variables — safe to experime
 | `MODEL_ID` | `Qwen/Qwen3-ASR-1.7B` | HuggingFace model (0.6B for speed, 1.7B for accuracy) |
 | `FAST_MODEL_ID` | `Qwen/Qwen3-ASR-0.6B` | Draft/partial model for speculative/DUAL_MODE |
 | `IDLE_TIMEOUT` | `120` | Seconds before model unloads (0 = keep loaded) |
+| `LOG_LEVEL` | `INFO` | Log verbosity (DEBUG, INFO, WARNING, ERROR) |
 | `REQUEST_TIMEOUT` | `300` | Max inference time per request |
 | `WS_BUFFER_SIZE` | `14400` | WebSocket audio buffer (~450ms at 16kHz) |
 | `WS_OVERLAP_SIZE` | `4800` | Overlap between chunks (~150ms) |
