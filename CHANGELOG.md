@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.10.0 — 2026-02-24
+
+### Added
+- **Real-time WebSocket benchmark** — new `E2Etest/test_realtime_accuracy.py` streams a FLEURS audio clip to the live WebSocket in real-time (450ms chunks with wall-clock pacing) and reports per-chunk input-to-output latency (min/median/p95/max), flush latency, RTF, WER and CER against the reference transcript. (#94)
+- **Realtime pytest marker** — `realtime` marker added to `E2Etest/pytest.ini` for filtering (`pytest E2Etest/ -m realtime`). (#93)
+- **Real-Time Benchmark report section** — `MarkdownReportGenerator` in `conftest.py` gains `_parse_realtime_metrics()` and a new ⚡ Real-Time Benchmark table in the generated markdown report, showing latency and accuracy per run. (#95)
+
 ## v0.9.0 — 2026-02-22
 
 ### Added
