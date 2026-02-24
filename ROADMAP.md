@@ -69,6 +69,14 @@ Issues ordered by dependency:
 - [x] #87 [Enhancement] Integrate Loguru for unified structured logging
 - [x] #88 [Enhancement] Intercept FastAPI & Uvicorn logs into Loguru
 
+## Phase 7 — E2E Test Quality → v0.10.0
+_The system ships a real-time WebSocket benchmark that measures input-to-output latency and transcription accuracy against known clips, integrated into the E2E report._
+
+Issues ordered by dependency:
+- [x] #93 [Enhancement] Add realtime marker to pytest.ini
+- [x] #94 [Enhancement] Add test_realtime_accuracy.py — WebSocket latency + accuracy benchmark
+- [x] #95 [Enhancement] Extend MarkdownReportGenerator with Real-Time Benchmark section
+
 ## Backlog
 _Unplaced items or future considerations._
 - Retire whisper-engine container (Qwen3-ASR-1.7B matches/beats Whisper large-v3)

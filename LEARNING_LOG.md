@@ -4,6 +4,30 @@ Running narrative of decisions, patterns, and lessons.
 
 ---
 
+## 2026-02-24 — Why this design: Real-time latency measurement via wall-clock pacing (Issues #93–#95)
+
+**Type**: Why this design
+**Related**: Issues #93, #94, #95, v0.10.0
+
+### The problem
+The E2E WebSocket tests validated correctness (does text come out?) but gave no signal on the metric that matters most for real-time use: *how long after a word is spoken does it appear in the transcript?* The server could be falling behind real-time (RTF > 1.0) and no test would catch it.
+
+### The design
+`_stream_and_time()` sends 450ms PCM chunks with wall-clock pacing (`asyncio.sleep` to hit the audio timeline), then measures **input-to-output latency** as `t_recv − t_audio_position` per response. This captures the actual experience: "I said this word at t=3.0s; it appeared at t=3.4s → 400ms lag." RTF is derived from the sum of raw inference times over audio duration — below 1.0 means the system can keep up, above 1.0 means it falls behind.
+
+### Why this over streaming without pacing
+Without wall-clock pacing, chunks are sent as fast as the network allows (~microseconds apart). The server queues them all and processes sequentially, so measured latency includes queue wait — not the real-time lag a live user would feel. Pacing forces the test to behave like a live microphone.
+
+### Why flush timing is separate
+The final flush includes silence padding and model commit. Its latency is structurally different from chunk latency (no audio timeline position to compare against), so it's reported separately as `flush_latency_ms`.
+
+### What could go wrong
+- If the server's idle watchdog unloads the model mid-stream, the test will time out waiting for `is_final`. The 60s timeout on flush catches this.
+- Latency values can go negative if the server processes chunks faster than real-time (response arrives before the next chunk's "audio time"). This is valid and means RTF < 1.0 — not a bug.
+- FLEURS clips vary from 5–20s. A very short clip (< 2 chunks) produces too few latency samples for p95 to be meaningful.
+
+---
+
 ## 2026-02-22 — What just happened: Replacing `print` and `logging` with `loguru` (Issues #87, #88)
 
 **Type**: What just happened
