@@ -6,6 +6,7 @@ from logger import log
 import dataclasses
 import os
 import re
+import time
 
 
 @dataclasses.dataclass
@@ -482,6 +483,9 @@ def generate_srt_from_results(
     language = results[0].language if hasattr(results[0], "language") else "en"
     audio_duration = len(audio) / sr
 
+    log.info("SRT generation | mode={} segments={} audio_duration={:.1f}s max_chars={}", mode, len(results), audio_duration, max_line_chars)
+    t0 = time.time()
+
     if mode == "accurate":
         if _aligner is None:
             raise RuntimeError(
@@ -501,4 +505,7 @@ def generate_srt_from_results(
 
     events = enforce_timing(events)
 
-    return format_srt(events)
+    srt_output = format_srt(events)
+    event_count = srt_output.count('\n\n') if srt_output.strip() else 0
+    log.info("SRT generation complete | events={} srt_len={} elapsed={:.2f}s", event_count, len(srt_output), time.time() - t0)
+    return srt_output
