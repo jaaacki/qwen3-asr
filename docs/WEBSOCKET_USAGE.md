@@ -12,16 +12,16 @@ Client connects and receives confirmation:
   "status": "connected",
   "sample_rate": 16000,
   "format": "pcm_s16le",
-  "buffer_size": 25600,
-  "overlap_size": 9600
+  "buffer_size": 14400,
+  "window_max_s": 6.0
 }
 ```
 
 ### Audio Streaming
 Send binary audio frames (PCM 16-bit little-endian, 16kHz mono):
-- Server buffers incoming chunks
-- Automatically transcribes when buffer reaches ~800ms (configurable via `WS_BUFFER_SIZE`)
-- **Overlap**: 300ms from the tail of each chunk is prepended to the next chunk, preventing word splits at buffer boundaries
+- Server accumulates audio in a sliding window (up to `WS_WINDOW_MAX_S` seconds, default 6s)
+- Every ~450ms (configurable via `WS_BUFFER_SIZE`), the server re-transcribes the entire accumulated window
+- **Cumulative partials**: Each partial result contains the full running transcript — client should replace its display text on each message, never append
 - Returns partial results as audio streams in
 
 ### Response Format
@@ -45,7 +45,7 @@ Send JSON text messages:
 ```
 The server appends 600ms of silence before transcribing, which helps the model commit trailing words.
 
-**Reset** — Clear audio buffer and overlap state:
+**Reset** — Clear audio buffer and sliding window state:
 ```json
 {"action": "reset"}
 ```
@@ -57,8 +57,8 @@ When the WebSocket disconnects, the server transcribes any remaining buffered au
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| `WS_BUFFER_SIZE` | `25600` | Buffer size in bytes before transcribing (~800ms at 16kHz) |
-| `WS_OVERLAP_SIZE` | `9600` | Overlap bytes from previous chunk (~300ms at 16kHz) |
+| `WS_BUFFER_SIZE` | `14400` | Buffer size in bytes before triggering transcription (~450ms at 16kHz) |
+| `WS_WINDOW_MAX_S` | `6.0` | Max seconds of audio in the sliding window |
 | `WS_FLUSH_SILENCE_MS` | `600` | Silence padding in ms appended on flush/disconnect |
 | `REQUEST_TIMEOUT` | `300` | Max seconds per inference request |
 | `IDLE_TIMEOUT` | `120` | Seconds before unloading model from GPU |
@@ -101,5 +101,5 @@ asyncio.run(transcribe_stream())
 - GPU inference serialized (one request at a time)
 - Audio preprocessing (mono conversion, normalization) applied automatically
 - WebSocket connections keep model loaded (reset idle timer)
-- Overlap ensures acoustic context is preserved across chunk boundaries
+- Sliding window re-transcribes accumulated audio for full context (up to 6s by default)
 - Silence padding on flush prevents the last word from being cut off

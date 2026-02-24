@@ -115,8 +115,8 @@ Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accur
 ### WebSocket Real-Time Transcription (`/ws/transcribe`)
 
 - Accepts raw PCM: 16-bit little-endian, 16kHz, mono
-- Buffers ~450ms of audio (`WS_BUFFER_SIZE=14400` bytes)
-- **Overlap**: Last 150ms of each chunk prepended to next chunk (`WS_OVERLAP_SIZE=4800`)
+- Accumulates audio in a sliding window (up to `WS_WINDOW_MAX_S` seconds, default 6s)
+- **Sliding window**: Re-transcribes entire accumulated audio each trigger for full context; partials are cumulative (client replaces, never appends)
 - **Silence padding**: 600ms silence appended on `flush` command to commit trailing words (`WS_FLUSH_SILENCE_MS`)
 - **VAD gating**: Silero VAD skips inference for silent frames (no GPU usage for silence)
 - **Dual-model**: If `DUAL_MODEL=true`, uses 0.6B for partials, 1.7B for final transcription
@@ -159,9 +159,8 @@ All Phase 3 features are gated behind environment variables — safe to experime
 | `LOG_LEVEL` | `INFO` | Log verbosity (DEBUG, INFO, WARNING, ERROR) |
 | `REQUEST_TIMEOUT` | `300` | Max inference time per request |
 | `WS_BUFFER_SIZE` | `14400` | WebSocket audio buffer (~450ms at 16kHz) |
-| `WS_OVERLAP_SIZE` | `4800` | Overlap between chunks (~150ms) |
-| `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush (ms) |
 | `WS_WINDOW_MAX_S` | `6.0` | Max seconds of audio in sliding window for WS streaming |
+| `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush (ms) |
 | `GATEWAY_MODE` | `false` | Run as gateway+worker split |
 | `DUAL_MODEL` | `false` | Load both 0.6B and 1.7B models |
 | `QUANTIZE` | `""` | `int8` or `fp8` |

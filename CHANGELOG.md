@@ -1,5 +1,18 @@
 # Changelog
 
+## [v0.12.0] — 2026-02-25
+
+Sliding window WebSocket streaming: model sees up to 6 seconds of context instead of 450ms, bringing streaming accuracy close to batch quality.
+
+### Changed
+- **WebSocket streaming**: Replaced per-chunk transcription with expanding sliding window (#101)
+  - Model now sees up to 6 seconds of context (was 450ms per chunk)
+  - Partials are cumulative transcripts (industry standard: client replaces, never appends)
+  - New env var: `WS_WINDOW_MAX_S` (default 6.0) controls window size (#100)
+  - Removed `overlap_size` from client handshake, added `window_max_s`
+- **WebSocket tests**: Updated for cumulative partial verification (#102)
+- **Realtime benchmark**: Simplified — dedup logic removed since cumulative partials eliminate overlap artifacts (#103)
+
 ## v0.11.0 — 2026-02-24
 
 Comprehensive observability: every request in, every response out, every error caught — atomic loguru logging across the entire request chain.
