@@ -161,6 +161,7 @@ All Phase 3 features are gated behind environment variables — safe to experime
 | `WS_BUFFER_SIZE` | `14400` | WebSocket audio buffer (~450ms at 16kHz) |
 | `WS_OVERLAP_SIZE` | `4800` | Overlap between chunks (~150ms) |
 | `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush (ms) |
+| `WS_WINDOW_MAX_S` | `6.0` | Max seconds of audio in sliding window for WS streaming |
 | `GATEWAY_MODE` | `false` | Run as gateway+worker split |
 | `DUAL_MODEL` | `false` | Load both 0.6B and 1.7B models |
 | `QUANTIZE` | `""` | `int8` or `fp8` |
