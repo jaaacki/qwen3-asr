@@ -1,14 +1,14 @@
 {
   "language": "chinese",
-  "wer_pct": 26.09,
-  "cer_pct": 26.09,
+  "wer_pct": 100.0,
+  "cer_pct": 34.78,
   "latency": {
-    "chunk_min_ms": 1.0,
-    "chunk_median_ms": 1.5,
-    "chunk_p95_ms": 1.8,
-    "chunk_max_ms": 1.9,
-    "flush_ms": 85.6,
-    "rtf": 0.455
+    "chunk_min_ms": 6368.0,
+    "chunk_median_ms": 22151.1,
+    "chunk_p95_ms": 36965.6,
+    "chunk_max_ms": 38778.9,
+    "flush_ms": 256.9,
+    "rtf": 0.435
   },
   "audio_duration_s": 10.38,
   "num_chunks": 24,
@@ -16,75 +16,117 @@
   "partials": [
     {
       "t_audio": 2.25,
-      "t_recv": 2.251,
-      "latency_ms": 1.4,
+      "t_recv": 8.618,
+      "latency_ms": 6368.0,
       "text": "这并。"
     },
     {
       "t_audio": 2.7,
-      "t_recv": 2.702,
-      "latency_ms": 1.6,
-      "text": "并不是。"
+      "t_recv": 10.777,
+      "latency_ms": 8076.5,
+      "text": "这并不是个。"
     },
     {
       "t_audio": 3.15,
-      "t_recv": 3.152,
-      "latency_ms": 1.7,
-      "text": "是告别。"
+      "t_recv": 12.933,
+      "latency_ms": 9783.2,
+      "text": "这并不是告别。"
+    },
+    {
+      "t_audio": 3.6,
+      "t_recv": 15.092,
+      "latency_ms": 11491.8,
+      "text": "这并不是告别。"
     },
     {
       "t_audio": 4.05,
-      "t_recv": 4.052,
-      "latency_ms": 1.6,
-      "text": "对。"
+      "t_recv": 17.252,
+      "latency_ms": 13202.3,
+      "text": "这并不是告别。"
     },
     {
       "t_audio": 4.5,
-      "t_recv": 4.501,
-      "latency_ms": 1.2,
-      "text": "这是一个。"
+      "t_recv": 19.446,
+      "latency_ms": 14946.2,
+      "text": "这并不是告别，这是一个。"
     },
     {
       "t_audio": 4.95,
-      "t_recv": 4.951,
-      "latency_ms": 1.2,
-      "text": "一个篇章。"
+      "t_recv": 21.66,
+      "latency_ms": 16709.7,
+      "text": "这并不是告别，这是一个篇章。"
     },
     {
       "t_audio": 5.4,
-      "t_recv": 5.402,
-      "latency_ms": 1.9,
-      "text": "新疆的结。"
+      "t_recv": 23.904,
+      "latency_ms": 18504.0,
+      "text": "这并不是告别，这是一个篇章的结束。"
     },
     {
       "t_audio": 5.85,
-      "t_recv": 5.851,
-      "latency_ms": 1.1,
-      "text": "结束。"
+      "t_recv": 26.153,
+      "latency_ms": 20303.5,
+      "text": "这并不是告别，这是一个篇章的结束。"
     },
     {
       "t_audio": 6.3,
-      "t_recv": 6.302,
-      "latency_ms": 1.8,
-      "text": "也是新。"
+      "t_recv": 28.451,
+      "latency_ms": 22151.1,
+      "text": "这并不是告别，这是一个篇章的结束，也是新。"
     },
     {
       "t_audio": 6.75,
-      "t_recv": 6.752,
-      "latency_ms": 1.6,
-      "text": "新篇章。"
+      "t_recv": 30.743,
+      "latency_ms": 23993.1,
+      "text": "这并不是告别，这是一个篇章的结束，也是新篇章。"
     },
     {
       "t_audio": 7.2,
-      "t_recv": 7.201,
-      "latency_ms": 1.4,
-      "text": "这样的开始。"
+      "t_recv": 33.07,
+      "latency_ms": 25869.7,
+      "text": "这并不是告别，这是一个篇章的结束，也是新篇章的开始。"
     },
     {
       "t_audio": 7.65,
-      "t_recv": 7.651,
-      "latency_ms": 1.0,
-      "text": "是。"
+      "t_recv": 35.399,
+      "latency_ms": 27749.2,
+      "text": "这并不是告别，这是一个篇章的结束，也是新篇章的开始。"
+    },
+    {
+      "t_audio": 8.1,
+      "t_recv": 37.71,
+      "latency_ms": 29610.1,
+      "text": "并不是告别，这是一个篇章的结束，也是新篇章的开始。"
+    },
+    {
+      "t_audio": 8.55,
+      "t_recv": 40.029,
+      "latency_ms": 31479.2,
+      "text": "是告别，这是一个篇章的结束，也是新篇章的开始。"
+    },
+    {
+      "t_audio": 9.0,
+      "t_recv": 42.31,
+      "latency_ms": 33310.5,
+      "text": "这是一个篇章的结束，也是新篇章的开始。"
+    },
+    {
+      "t_audio": 9.45,
+      "t_recv": 44.588,
+      "latency_ms": 35137.9,
+      "text": "这是一个篇章的结束，也是新篇章的开始。"
+    },
+    {
+      "t_audio": 9.9,
+      "t_recv": 46.866,
+      "latency_ms": 36965.6,
+      "text": "这是一个篇章的结束，也是新篇章的开始。"
+    },
+    {
+      "t_audio": 10.35,
+      "t_recv": 49.129,
+      "latency_ms": 38778.9,
+      "text": "一个篇章的结束，也是新篇章的开始。"
     }
   ]
 }
