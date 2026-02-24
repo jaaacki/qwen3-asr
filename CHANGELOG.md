@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.1 — 2026-02-24
+
+### Changed
+- **Pin all Dockerfile dependencies** — 15 packages pinned to latest versions as of 2026-02-24 (e.g. fastapi==0.133.0, uvicorn==0.41.0, websockets==16.0, flash-attn==2.8.3, onnxruntime-gpu==1.24.2) for reproducible builds
+- **Pin E2E test dependencies** — 9 packages pinned to latest Python 3.8-compatible versions (pytest==8.3.5, httpx==0.28.1, numpy==1.24.4, etc.)
+
+### Fixed
+- **Missing Dockerfile COPY** — `logger.py`, `schemas.py`, `translator.py` were imported at runtime but never copied into the container image, causing crashes on fresh builds
+- **`__future__` import order in subtitle.py** — `from __future__ import annotations` must precede all other imports; was after `from logger import log`
+
 ## v0.10.0 — 2026-02-24
 
 ### Added

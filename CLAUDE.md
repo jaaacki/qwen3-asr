@@ -70,10 +70,13 @@ Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accur
 
 ### File Organization
 
-- `src/server.py` — Core FastAPI server with inference logic, priority queue, WebSocket handling (~1060 lines)
+- `src/server.py` — Core FastAPI server with inference logic, priority queue, WebSocket handling (~1100 lines)
 - `src/gateway.py` — Gateway proxy mode (GATEWAY_MODE=true); routes to worker subprocess
 - `src/worker.py` — Inference worker for gateway mode; imports logic from server.py
 - `src/subtitle.py` — Subtitle generation module: ForcedAligner, segmentation, SRT formatting
+- `src/logger.py` — Loguru-based structured logging with uvicorn/FastAPI interception
+- `src/schemas.py` — Pydantic models for Swagger UI documentation
+- `src/translator.py` — Translation endpoint using external OpenAI-compatible APIs
 - `src/export_onnx.py` — Export encoder to ONNX for ORT acceleration
 - `src/build_trt.py` — Build TensorRT engine for encoder
 - `E2Etest/` — pytest-based E2E test suite (test_api_http, test_websocket, test_performance, test_integration, test_accuracy, test_subtitle)
@@ -174,6 +177,6 @@ Base image: `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel`. The `devel` variant i
 - `docs/GRANIAN_BENCHMARK.md` — Performance comparison of ASGI servers
 - `RESEARCH_ANALYSIS.md` — Architecture comparison with official Qwen3-ASR SDK and vLLM backend
 - `improvements.md` — Prioritized optimization recommendations (includes WebSocket critical path latency analysis)
-- `ROADMAP.md` — Milestone planning (4 phases, all completed)
+- `ROADMAP.md` — Milestone planning (7 phases completed, backlog)
 - `CHANGELOG.md` — Version history
 - `LEARNING_LOG.md` — Technical learnings and decisions

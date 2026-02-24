@@ -4,6 +4,26 @@ Running narrative of decisions, patterns, and lessons.
 
 ---
 
+## 2026-02-24 — What just happened: Pinning all dependencies and fixing silent Dockerfile gaps (v0.10.1)
+
+**Type**: What just happened
+**Related**: v0.10.1
+
+### Pattern
+All 15 Dockerfile pip packages were unpinned — each `docker compose up -d --build` could silently install different versions. The E2E test requirements used `>=` minimum bounds, equally unpredictable. Both were pinned to exact versions verified via `pip index versions` against the container (Python 3.11) and NAS (Python 3.8) respectively.
+
+### What went wrong: silent Dockerfile COPY gaps
+The Dockerfile had 5 explicit COPY lines (server.py, gateway.py, worker.py, subtitle.py, build_trt.py) but 3 runtime-required modules were missing: `logger.py` (loguru wrapper, imported by every file), `schemas.py` (Pydantic models for Swagger UI), and `translator.py` (translation endpoint). The old container worked only because Docker layer caching preserved them from a previous build. A clean rebuild (which the dependency pinning forced) exposed all three immediately.
+
+### Aha moment
+`from __future__ import annotations` must be the very first statement after the module docstring — before any imports. `subtitle.py` had `from logger import log` above it, which Python 3.11 rejected as a `SyntaxError`. Python 3.8 on the NAS didn't catch this because `subtitle.py` isn't imported there. Only the container's Python 3.11 enforces the rule strictly when the file is actually loaded.
+
+### What could go wrong
+- Pinning `git+https://github.com/QwenLM/Qwen3-ASR.git` without a commit hash means the qwen-asr package itself is still floating. A breaking upstream change could affect builds. Mitigation: pin to a specific commit hash if stability is critical.
+- E2E test pins are constrained by Python 3.8 on the NAS. When the NAS Python is upgraded, these can jump to latest (e.g. pytest 9.x, numpy 2.x, websockets 16.x).
+
+---
+
 ## 2026-02-24 — Why this design: Real-time latency measurement via wall-clock pacing (Issues #93–#95)
 
 **Type**: Why this design

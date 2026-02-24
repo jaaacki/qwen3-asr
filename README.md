@@ -211,15 +211,18 @@ python src/build_trt.py --output models/encoder.trt
 ```
 qwen3-asr/
 ├── compose.yaml          # Docker Compose configuration
-├── Dockerfile            # Container build definition
+├── Dockerfile            # Container build (all deps pinned)
 ├── src/
 │   ├── server.py         # FastAPI server (~1100 lines)
-│   ├── subtitle.py       # Subtitle generation (aligner, segmentation, SRT)
 │   ├── gateway.py        # Gateway proxy (GATEWAY_MODE=true)
 │   ├── worker.py         # Inference worker subprocess
+│   ├── subtitle.py       # Subtitle generation (aligner, segmentation, SRT)
+│   ├── logger.py         # Loguru structured logging + uvicorn interception
+│   ├── schemas.py        # Pydantic models for Swagger UI
+│   ├── translator.py     # Translation via external OpenAI-compatible APIs
 │   ├── export_onnx.py    # Export encoder to ONNX Runtime
-│   ├── build_trt.py      # Build TensorRT encoder engine
-│   └── server_test.py    # Manual test notes
+│   └── build_trt.py      # Build TensorRT encoder engine
+├── E2Etest/              # pytest E2E test suite (deps pinned for Python 3.8)
 ├── docs/
 │   ├── WEBSOCKET_USAGE.md
 │   └── GRANIAN_BENCHMARK.md
