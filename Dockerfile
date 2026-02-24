@@ -35,6 +35,7 @@ RUN pip install --no-cache-dir \
     psutil==7.2.2 \
     granian==2.7.1 \
     loguru==0.7.3 \
+    openai==2.23.0 \
     # vllm \  # Uncomment for USE_VLLM=true support (large dependency)
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 
