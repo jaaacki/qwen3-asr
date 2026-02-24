@@ -1,0 +1,90 @@
+{
+  "language": "chinese",
+  "wer_pct": 26.09,
+  "cer_pct": 26.09,
+  "latency": {
+    "chunk_min_ms": 1.0,
+    "chunk_median_ms": 1.5,
+    "chunk_p95_ms": 1.8,
+    "chunk_max_ms": 1.9,
+    "flush_ms": 85.6,
+    "rtf": 0.455
+  },
+  "audio_duration_s": 10.38,
+  "num_chunks": 24,
+  "chunk_duration_ms": 450,
+  "partials": [
+    {
+      "t_audio": 2.25,
+      "t_recv": 2.251,
+      "latency_ms": 1.4,
+      "text": "这并。"
+    },
+    {
+      "t_audio": 2.7,
+      "t_recv": 2.702,
+      "latency_ms": 1.6,
+      "text": "并不是。"
+    },
+    {
+      "t_audio": 3.15,
+      "t_recv": 3.152,
+      "latency_ms": 1.7,
+      "text": "是告别。"
+    },
+    {
+      "t_audio": 4.05,
+      "t_recv": 4.052,
+      "latency_ms": 1.6,
+      "text": "对。"
+    },
+    {
+      "t_audio": 4.5,
+      "t_recv": 4.501,
+      "latency_ms": 1.2,
+      "text": "这是一个。"
+    },
+    {
+      "t_audio": 4.95,
+      "t_recv": 4.951,
+      "latency_ms": 1.2,
+      "text": "一个篇章。"
+    },
+    {
+      "t_audio": 5.4,
+      "t_recv": 5.402,
+      "latency_ms": 1.9,
+      "text": "新疆的结。"
+    },
+    {
+      "t_audio": 5.85,
+      "t_recv": 5.851,
+      "latency_ms": 1.1,
+      "text": "结束。"
+    },
+    {
+      "t_audio": 6.3,
+      "t_recv": 6.302,
+      "latency_ms": 1.8,
+      "text": "也是新。"
+    },
+    {
+      "t_audio": 6.75,
+      "t_recv": 6.752,
+      "latency_ms": 1.6,
+      "text": "新篇章。"
+    },
+    {
+      "t_audio": 7.2,
+      "t_recv": 7.201,
+      "latency_ms": 1.4,
+      "text": "这样的开始。"
+    },
+    {
+      "t_audio": 7.65,
+      "t_recv": 7.651,
+      "latency_ms": 1.0,
+      "text": "是。"
+    }
+  ]
+}
