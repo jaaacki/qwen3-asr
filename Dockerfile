@@ -19,34 +19,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git libsndfile1 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install python dependencies
+# Install python dependencies (pinned to latest as of 2026-02-24)
 RUN pip install --no-cache-dir \
-    accelerate \
-    soundfile \
+    accelerate==1.12.0 \
+    soundfile==0.13.1 \
     torchaudio==2.6.0 \
-    fastapi \
-    uvicorn \
-    python-multipart \
-    websockets \
-    silero-vad \
-    bitsandbytes \
-    onnxruntime-gpu \
-    aiohttp \
-    psutil \
-    granian \
-    loguru \
+    fastapi==0.133.0 \
+    uvicorn==0.41.0 \
+    python-multipart==0.0.22 \
+    websockets==16.0 \
+    silero-vad==6.2.1 \
+    bitsandbytes==0.49.2 \
+    onnxruntime-gpu==1.24.2 \
+    aiohttp==3.13.3 \
+    psutil==7.2.2 \
+    granian==2.7.1 \
+    loguru==0.7.3 \
     # vllm \  # Uncomment for USE_VLLM=true support (large dependency)
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 
 # torchao for FP8 quantization (opt-in via QUANTIZE=fp8)
-RUN pip install --no-cache-dir torchao
+RUN pip install --no-cache-dir torchao==0.16.0
 
 # Flash Attention 2 (built from source for CUDA 12.4 compatibility)
-RUN pip install --no-cache-dir flash-attn --no-build-isolation
+RUN pip install --no-cache-dir flash-attn==2.8.3 --no-build-isolation
 
 # Optional: install torch-tensorrt for TRT encoder support
 # RUN pip install --no-cache-dir torch-tensorrt
 
+COPY src/logger.py /app/logger.py
+COPY src/schemas.py /app/schemas.py
+COPY src/translator.py /app/translator.py
 COPY src/server.py /app/server.py
 COPY src/gateway.py /app/gateway.py
 COPY src/worker.py /app/worker.py

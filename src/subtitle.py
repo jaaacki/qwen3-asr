@@ -1,7 +1,7 @@
 """Subtitle generation module: ForcedAligner, segmentation, SRT formatting."""
-from logger import log
-
 from __future__ import annotations
+
+from logger import log
 
 import dataclasses
 import os
