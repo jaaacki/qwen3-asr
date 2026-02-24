@@ -290,3 +290,18 @@ Each layer adds its own timing, so you can see exactly where time is spent: 6ms 
 ### What could go wrong
 - **Log volume at DEBUG level**: With atomic logging on every endpoint, DEBUG level in a high-traffic deployment could produce significant log volume. The lazy `{}` formatting helps, but the sheer number of log calls is still nonzero. Use WARNING in production if log storage is a concern.
 - **Timing overhead**: Each `time.time()` call adds ~100ns. With 4-6 timing points per request, that's ~0.5us — negligible compared to inference times measured in seconds, but worth noting for the WebSocket hot path where chunks arrive every 450ms.
+
+---
+
+## 2026-02-25 — Why this design: Sliding Window WebSocket Streaming (#101)
+
+**Type**: Why this design
+**Related**: Issues #100, #101, #102, #103, v0.12.0
+
+**Why this design:** Per-chunk transcription with only 450ms of audio context produces ~42% WER for English streaming. The model simply doesn't have enough context to disambiguate words. We switched to an expanding sliding window that accumulates up to 6 seconds of audio and re-transcribes the entire window each trigger. This is the same approach used by Google Cloud Speech, AWS Transcribe, and Deepgram.
+
+**Trade-off:** GPU cost per inference grows linearly with window size. At 6 seconds on an RTX 4060, inference takes ~200-500ms per trigger instead of ~2ms. This is acceptable for real-time use (still well under RTF 1.0) and the accuracy improvement is dramatic.
+
+**Cumulative partials:** Industry standard is for each partial to contain the full running transcript. The client simply replaces its display text on each message — no dedup, no concatenation, no state management. This eliminates an entire class of bugs (overlap artifacts, missed words at boundaries).
+
+**What could go wrong:** If `WS_WINDOW_MAX_S` is set too high (>10s), inference time may exceed the trigger interval, causing a backlog. The current 6s default keeps inference well within the 450ms trigger window on RTX 4060.

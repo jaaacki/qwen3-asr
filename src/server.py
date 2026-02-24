@@ -128,6 +128,11 @@ WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.15)
 # Gives the model trailing context to commit the last word
 WS_FLUSH_SILENCE_MS = int(os.getenv("WS_FLUSH_SILENCE_MS", "600"))
 
+# Sliding window: max seconds of audio to keep for re-transcription
+# Larger = more context = better accuracy, but higher GPU cost per trigger
+WS_WINDOW_MAX_S = float(os.getenv("WS_WINDOW_MAX_S", "6.0"))
+WS_WINDOW_MAX_BYTES = int(WS_WINDOW_MAX_S * TARGET_SR * 2)  # 16-bit PCM
+
 # Speculative decoding: use 0.6B as draft, 1.7B as verifier
 USE_SPECULATIVE = os.getenv("USE_SPECULATIVE", "").lower() == "true"
 
@@ -1010,28 +1015,27 @@ async def websocket_transcribe(websocket: WebSocket):
     WebSocket endpoint for real-time audio transcription.
 
     Accepts binary audio frames (PCM 16-bit, 16kHz mono).
-    Buffers audio and transcribes in ~450ms windows with 150ms overlap
-    between consecutive chunks to prevent word splits at boundaries.
+    Uses an expanding sliding window (up to WS_WINDOW_MAX_S seconds)
+    that re-transcribes accumulated audio each trigger for full context.
+    Partials are cumulative transcripts — clients should replace, not append.
 
     Client can send:
     - Binary audio data (raw PCM bytes)
-    - JSON: {"action": "flush"} — transcribe remaining buffer with silence padding
-    - JSON: {"action": "reset"} — clear buffer and overlap state
+    - JSON: {"action": "flush"} — transcribe full window with silence padding
+    - JSON: {"action": "reset"} — clear window and buffer state
     """
     # WS compression disabled via uvicorn --ws websockets (see Dockerfile CMD)
     # per-message-deflate would add ~1ms CPU overhead per frame
     await websocket.accept()
     log.info("[WS] Client connected")
 
-    # Audio buffer for accumulating incoming chunks
+    # Incoming audio accumulator (triggers inference at WS_BUFFER_SIZE)
     audio_buffer = bytearray()
-    # Overlap: tail of previous chunk, prepended to next for acoustic context
-    overlap_buffer = bytearray()
+    # Sliding window: all received audio up to WS_WINDOW_MAX_BYTES
+    audio_window = bytearray()
     # Language: None = auto-detect, or a code like "en", "zh"
     lang_code: str | None = None
-    # KV-cache state for cross-chunk encoder reuse
-    _prev_encoder_out = None
-    # Counter for transcribed chunks
+    # Counter for transcribed windows
     chunk_count = 0
 
     try:
@@ -1043,7 +1047,7 @@ async def websocket_transcribe(websocket: WebSocket):
             "sample_rate": TARGET_SR,
             "format": "pcm_s16le",
             "buffer_size": WS_BUFFER_SIZE,
-            "overlap_size": WS_OVERLAP_SIZE,
+            "window_max_s": WS_WINDOW_MAX_S,
         })
 
         while True:
@@ -1056,33 +1060,35 @@ async def websocket_transcribe(websocket: WebSocket):
                         msg = json.loads(data["text"])
                         action = msg.get("action", "")
 
-                        if action == "flush" and len(audio_buffer) > 0:
-                            text, _prev_encoder_out = await _transcribe_with_context(
-                                audio_buffer, overlap_buffer, pad_silence=True,
-                                lang_code=lang_code,
-                                encoder_cache=_prev_encoder_out,
-                            )
-                            chunk_count += 1
-                            await websocket.send_json({
-                                "text": text,
-                                "is_partial": False,
-                                "is_final": True,
-                            })
-                            audio_buffer.clear()
-                            overlap_buffer.clear()
+                        if action == "flush":
+                            # Merge any pending audio into window
+                            if audio_buffer:
+                                audio_window.extend(audio_buffer)
+                                audio_buffer.clear()
 
-                        elif action == "flush" and len(audio_buffer) == 0:
-                            # Nothing to flush — send empty final
-                            await websocket.send_json({
-                                "text": "",
-                                "is_partial": False,
-                                "is_final": True,
-                            })
+                            if len(audio_window) > 0:
+                                text, _ = await _transcribe_with_context(
+                                    bytes(audio_window), b"", pad_silence=True,
+                                    lang_code=lang_code,
+                                    encoder_cache=None,
+                                )
+                                chunk_count += 1
+                                await websocket.send_json({
+                                    "text": text,
+                                    "is_partial": False,
+                                    "is_final": True,
+                                })
+                            else:
+                                await websocket.send_json({
+                                    "text": "",
+                                    "is_partial": False,
+                                    "is_final": True,
+                                })
+                            audio_window.clear()
 
                         elif action == "reset":
                             audio_buffer.clear()
-                            overlap_buffer.clear()
-                            _prev_encoder_out = None
+                            audio_window.clear()
                             await websocket.send_json({
                                 "status": "buffer_reset"
                             })
@@ -1107,24 +1113,26 @@ async def websocket_transcribe(websocket: WebSocket):
                 elif "bytes" in data:
                     audio_buffer.extend(data["bytes"])
 
-                    # Process when buffer reaches target size
+                    # Trigger when buffer accumulates WS_BUFFER_SIZE of new audio
                     if len(audio_buffer) >= WS_BUFFER_SIZE:
-                        # Take exactly WS_BUFFER_SIZE bytes (even-aligned for 16-bit)
-                        chunk_size = (WS_BUFFER_SIZE // 2) * 2
-                        process_chunk = bytes(audio_buffer[:chunk_size])
-                        audio_buffer = audio_buffer[chunk_size:]
+                        # Move new audio into the sliding window
+                        audio_window.extend(audio_buffer)
+                        audio_buffer.clear()
 
-                        # Transcribe with overlap from previous chunk
-                        text, _prev_encoder_out = await _transcribe_with_context(
-                            process_chunk, overlap_buffer, pad_silence=False,
+                        # Trim window if it exceeds the cap
+                        if len(audio_window) > WS_WINDOW_MAX_BYTES:
+                            trim = len(audio_window) - WS_WINDOW_MAX_BYTES
+                            # Align to 2-byte boundary (16-bit PCM)
+                            trim = (trim // 2) * 2
+                            audio_window = audio_window[trim:]
+
+                        # Transcribe the entire window
+                        text, _ = await _transcribe_with_context(
+                            bytes(audio_window), b"", pad_silence=False,
                             lang_code=lang_code,
-                            encoder_cache=_prev_encoder_out,
+                            encoder_cache=None,
                         )
                         chunk_count += 1
-
-                        # Save tail of this chunk as overlap for next
-                        overlap_len = min(WS_OVERLAP_SIZE, len(process_chunk))
-                        overlap_buffer = bytearray(process_chunk[-overlap_len:])
 
                         if text:
                             await websocket.send_json({
@@ -1135,12 +1143,14 @@ async def websocket_transcribe(websocket: WebSocket):
 
             except WebSocketDisconnect:
                 # Client disconnected — transcribe any remaining audio
-                if len(audio_buffer) > 0:
+                if audio_buffer:
+                    audio_window.extend(audio_buffer)
+                if len(audio_window) > 0:
                     try:
                         text, _ = await _transcribe_with_context(
-                            audio_buffer, overlap_buffer, pad_silence=True,
+                            bytes(audio_window), b"", pad_silence=True,
                             lang_code=lang_code,
-                            encoder_cache=_prev_encoder_out,
+                            encoder_cache=None,
                         )
                         chunk_count += 1
                         if text:
