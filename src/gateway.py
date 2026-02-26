@@ -41,7 +41,7 @@ async def _ensure_worker():
                 "--ws", "websockets",
             ])
             # Wait for worker to be ready
-            for _ in range(30):
+            for attempt in range(30):
                 await asyncio.sleep(1)
                 try:
                     async with aiohttp.ClientSession() as session:
@@ -53,6 +53,8 @@ async def _ensure_worker():
                                 break
                 except Exception:
                     continue
+            else:
+                log.error("Worker process failed to become ready after 30s")
         _last_used = time.time()
 
 
@@ -230,12 +232,20 @@ async def transcribe_stream(
     form.add_field("language", language)
     form.add_field("return_timestamps", str(return_timestamps).lower())
 
+    t0 = time.time()
+
     async def stream_from_worker():
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
-                async for line in resp.content:
-                    _last_used = time.time()
-                    yield line
+        chunk_count = 0
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
+                    async for line in resp.content:
+                        _last_used = time.time()
+                        chunk_count += 1
+                        yield line
+            log.info("Gateway POST /v1/audio/transcriptions/stream | done chunks={} elapsed={:.2f}s", chunk_count, time.time() - t0)
+        except Exception as e:
+            log.error("Gateway POST /v1/audio/transcriptions/stream | error after {:.2f}s: {}", time.time() - t0, e)
 
     return StreamingResponse(
         stream_from_worker(),
@@ -271,6 +281,9 @@ async def websocket_proxy(websocket: WebSocket):
                     try:
                         while True:
                             data = await websocket.receive()
+                            if data.get("type") == "websocket.disconnect":
+                                await worker_ws.close()
+                                break
                             _last_used = time.time()
                             if "text" in data:
                                 await worker_ws.send_str(data["text"])
@@ -278,8 +291,8 @@ async def websocket_proxy(websocket: WebSocket):
                                 await worker_ws.send_bytes(data["bytes"])
                     except WebSocketDisconnect:
                         await worker_ws.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning("[GW-WS] client_to_worker error: {}", e)
 
                 async def worker_to_client():
                     """Forward worker messages to client."""
@@ -292,8 +305,8 @@ async def websocket_proxy(websocket: WebSocket):
                                 await websocket.send_bytes(msg.data)
                             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                                 break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning("[GW-WS] worker_to_client error: {}", e)
 
                 await asyncio.gather(client_to_worker(), worker_to_client(), return_exceptions=True)
 

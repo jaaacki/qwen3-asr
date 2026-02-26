@@ -19,12 +19,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git libsndfile1 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install python dependencies (pinned to latest as of 2026-02-24)
+# Install python dependencies (pinned to latest as of 2026-02-26)
 RUN pip install --no-cache-dir \
     accelerate==1.12.0 \
     soundfile==0.13.1 \
     torchaudio==2.6.0 \
-    fastapi==0.133.0 \
+    fastapi==0.133.1 \
     uvicorn==0.41.0 \
     python-multipart==0.0.22 \
     websockets==16.0 \
@@ -33,9 +33,9 @@ RUN pip install --no-cache-dir \
     onnxruntime-gpu==1.24.2 \
     aiohttp==3.13.3 \
     psutil==7.2.2 \
-    granian==2.7.1 \
+    granian==2.7.2 \
     loguru==0.7.3 \
-    openai==2.23.0 \
+    openai==2.24.0 \
     # vllm \  # Uncomment for USE_VLLM=true support (large dependency)
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 

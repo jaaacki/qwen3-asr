@@ -597,7 +597,11 @@ async def transcribe(
     log.info("POST /v1/audio/transcriptions | file={} size={} language={}", file.filename, len(audio_bytes), language)
     t0 = time.time()
     import soundfile as sf
-    audio, sr = sf.read(io.BytesIO(audio_bytes))
+    try:
+        audio, sr = sf.read(io.BytesIO(audio_bytes))
+    except Exception as e:
+        log.error("POST /v1/audio/transcriptions | audio decode failed: {}", e)
+        return JSONResponse(status_code=422, content={"error": f"Could not decode audio: {e}"})
 
     lang_code = None if language == "auto" else language
 
@@ -842,6 +846,10 @@ def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
         audio = _PINNED_AUDIO_BUFFER[:len(audio)].numpy()
 
     m = (_fast_model if use_fast and _fast_model is not None else model)
+    model_tag = "fast" if (use_fast and _fast_model is not None) else "full"
+    audio_duration = len(audio) / sr
+    t0 = time.time()
+    log.debug("_do_transcribe | model={} audio={:.2f}s lang={} timestamps={}", model_tag, audio_duration, lang_code or "auto", return_timestamps)
 
     def _run_transcribe():
         return m.transcribe(
@@ -898,11 +906,17 @@ def _do_transcribe(audio, sr, lang_code, return_timestamps, use_fast=False):
             _cuda_stream.synchronize()
         else:
             results = _run_transcribe()
+    text_len = sum(len(r.text) for r in results) if results else 0
+    log.debug("_do_transcribe | done model={} audio={:.2f}s elapsed={:.2f}s text_len={}", model_tag, audio_duration, time.time() - t0, text_len)
     return results
 
 
 async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
     """Generator for Server-Sent Events streaming transcription."""
+    audio_duration = len(audio) / sr
+    t0 = time.time()
+    chunk_count = 0
+    log.info("SSE stream | audio={:.2f}s lang={}", audio_duration, lang_code or "auto")
     try:
         if hasattr(model, 'transcribe_stream') or hasattr(model, 'stream_transcribe'):
             stream_method = getattr(model, 'transcribe_stream', None) or getattr(model, 'stream_transcribe', None)
@@ -920,7 +934,9 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
                         }
                         if return_timestamps and hasattr(partial_result, 'timestamps') and partial_result.timestamps:
                             data["timestamps"] = partial_result.timestamps
+                        chunk_count += 1
                         yield f"data: {json.dumps(data)}\n\n"
+                log.info("SSE stream | done chunks={} elapsed={:.2f}s", chunk_count, time.time() - t0)
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 return
             except (TypeError, AttributeError, NotImplementedError):
@@ -943,6 +959,7 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
                     data["timestamps"] = results[0].timestamps
             else:
                 data = {"text": "", "language": lang_code or "auto", "is_final": True}
+            chunk_count += 1
             yield f"data: {json.dumps(data)}\n\n"
         else:
             # Long audio: process in 5s chunks, stream each result
@@ -969,6 +986,7 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
                 else:
                     data = {"text": "", "language": lang_code or "auto", "is_final": is_last, "chunk_index": chunk_index}
 
+                chunk_count += 1
                 yield f"data: {json.dumps(data)}\n\n"
                 chunk_index += 1
 
@@ -976,9 +994,11 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
                     break
                 start = end - OVERLAP_SAMPLES  # overlap for context
 
+        log.info("SSE stream | done chunks={} elapsed={:.2f}s", chunk_count, time.time() - t0)
         yield f"data: {json.dumps({'done': True})}\n\n"
 
     except Exception as e:
+        log.error("SSE stream | error after {:.2f}s: {}", time.time() - t0, e)
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
 
@@ -1054,6 +1074,9 @@ async def websocket_transcribe(websocket: WebSocket):
             try:
                 data = await websocket.receive()
 
+                if data.get("type") == "websocket.disconnect":
+                    break
+
                 # ── Control commands (JSON text) ────────────────────────
                 if "text" in data:
                     try:
@@ -1061,6 +1084,8 @@ async def websocket_transcribe(websocket: WebSocket):
                         action = msg.get("action", "")
 
                         if action == "flush":
+                            window_s = len(audio_window) / 2 / TARGET_SR
+                            log.debug("[WS] flush | window={:.2f}s", window_s)
                             # Merge any pending audio into window
                             if audio_buffer:
                                 audio_window.extend(audio_buffer)
@@ -1087,6 +1112,7 @@ async def websocket_transcribe(websocket: WebSocket):
                             audio_window.clear()
 
                         elif action == "reset":
+                            log.debug("[WS] reset | clearing buffer and window")
                             audio_buffer.clear()
                             audio_window.clear()
                             await websocket.send_json({
@@ -1099,12 +1125,20 @@ async def websocket_transcribe(websocket: WebSocket):
                                 lang_code = None
                             elif new_lang:
                                 lang_code = new_lang
+                            log.debug("[WS] config | language={}", lang_code or "auto")
                             await websocket.send_json({
                                 "status": "configured",
                                 "language": lang_code or "auto",
                             })
 
+                        else:
+                            log.warning("[WS] unknown action: {!r}", action)
+                            await websocket.send_json({
+                                "error": f"Unknown action: {action!r}"
+                            })
+
                     except json.JSONDecodeError:
+                        log.warning("[WS] invalid JSON command: {!r}", data["text"][:80])
                         await websocket.send_json({
                             "error": "Invalid JSON command"
                         })
@@ -1193,6 +1227,9 @@ async def _transcribe_with_context(
     Returns:
         Tuple of (transcribed text, new encoder cache for next chunk)
     """
+    audio_duration = len(audio_bytes) / 2 / TARGET_SR  # 16-bit PCM = 2 bytes per sample
+    t0 = time.time()
+    log.debug("_transcribe_with_context | audio={:.2f}s pad_silence={} lang={}", audio_duration, pad_silence, lang_code or "auto")
     try:
         # Build the full audio: [overlap] + [current chunk] + [optional silence]
         full_audio = bytearray()
@@ -1215,6 +1252,7 @@ async def _transcribe_with_context(
 
         # VAD gate: skip inference if no speech detected
         if not is_speech(audio):
+            log.debug("_transcribe_with_context | VAD: silence, skipping inference")
             return ""
 
         # Run inference via priority queue (WS = priority 0)
@@ -1235,13 +1273,16 @@ async def _transcribe_with_context(
             pass
 
         if results and len(results) > 0:
-            return detect_and_fix_repetitions(results[0].text), cache_out
+            text = detect_and_fix_repetitions(results[0].text)
+            log.debug("_transcribe_with_context | done elapsed={:.2f}s text_len={}", time.time() - t0, len(text))
+            return text, cache_out
         return "", cache_out
 
     except asyncio.TimeoutError:
+        log.warning("_transcribe_with_context | timed out after {:.2f}s audio={:.2f}s", time.time() - t0, audio_duration)
         return "[timeout]", None
     except Exception as e:
-        log.error(f"Transcription error: {e}")
+        log.error("_transcribe_with_context | error after {:.2f}s: {}", time.time() - t0, e)
         return f"[error: {e}]", None
 
 
