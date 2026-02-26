@@ -104,6 +104,12 @@ async def _idle_watchdog():
 @asynccontextmanager
 async def lifespan(app):
     asyncio.create_task(_idle_watchdog())
+    if IDLE_TIMEOUT == 0:
+        log.info("Always-on mode: pre-spawning worker at startup")
+        try:
+            await _ensure_worker()
+        except Exception as e:
+            log.warning("Worker pre-spawn failed (will retry on first request): {}", e)
     yield
     await _kill_worker()
 

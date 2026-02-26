@@ -1252,7 +1252,7 @@ async def _transcribe_with_context(
 
         # VAD gate: skip inference if no speech detected
         if not is_speech(audio):
-            log.debug("_transcribe_with_context | VAD: silence, skipping inference")
+            log.info("_transcribe_with_context | VAD: silence, skipping inference")
             return ""
 
         # Run inference via priority queue (WS = priority 0)
@@ -1274,7 +1274,7 @@ async def _transcribe_with_context(
 
         if results and len(results) > 0:
             text = detect_and_fix_repetitions(results[0].text)
-            log.debug("_transcribe_with_context | done elapsed={:.2f}s text_len={}", time.time() - t0, len(text))
+            log.info("_transcribe_with_context | done elapsed={:.2f}s text_len={} text={!r}", time.time() - t0, len(text), text[:80])
             return text, cache_out
         return "", cache_out
 
