@@ -25,7 +25,7 @@ IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", "120"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "300"))
 
 _worker_proc: subprocess.Popen | None = None
-_last_used = 0.0
+_last_used = time.time()
 _worker_lock = asyncio.Lock()
 
 
