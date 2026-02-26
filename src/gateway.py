@@ -29,12 +29,29 @@ _last_used = 0.0
 _worker_lock = asyncio.Lock()
 
 
+def _check_vram_available(min_free_mb: int = 3500) -> tuple[bool, int]:
+    """Return (ok, free_mb) — check GPU has enough free VRAM to load the model."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        free_mb = int(result.stdout.strip())
+        return free_mb >= min_free_mb, free_mb
+    except Exception:
+        return True, -1  # can't check — optimistically proceed
+
+
 async def _ensure_worker():
     """Start worker process if not running."""
     global _worker_proc, _last_used
     async with _worker_lock:
         if _worker_proc is None or _worker_proc.poll() is not None:
-            log.info("Starting worker process...")
+            ok, free_mb = _check_vram_available()
+            if not ok:
+                log.error("Not enough VRAM to start worker: {}MB free, need ~3500MB", free_mb)
+                raise RuntimeError(f"Insufficient VRAM: {free_mb}MB free")
+            log.info("Starting worker process... (VRAM free: {}MB)", free_mb)
             _worker_proc = subprocess.Popen([
                 sys.executable, "-m", "uvicorn", "worker:app",
                 "--host", WORKER_HOST, "--port", str(WORKER_PORT),
