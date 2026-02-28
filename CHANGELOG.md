@@ -1,5 +1,31 @@
 # Changelog
 
+## [v0.13.0] — 2026-03-01
+
+Production standards compliance: structured error responses, request tracing, startup validation, and externalized configuration. Every log entry now carries a requestId, every error response is machine-parseable, and every configurable value lives in an env var.
+
+### Added
+- **Standard error response shape** — all error responses use `{code, message, statusCode, context}` with machine-readable error codes (`AUDIO_DECODE_FAILED`, `TRANSCRIPTION_TIMEOUT`, `TRANSLATION_FAILED`, `SUBTITLE_TIMEOUT`, `EMPTY_AUDIO`, `INVALID_MODE`, `WORKER_ERROR`) (#107)
+- **`ErrorResponse` Pydantic model** in `schemas.py` for Swagger documentation of error responses (#107)
+- **`error_response()` helper** in new `src/errors.py` — auto-injects `requestId` into error context (#107)
+- **Request ID middleware** — HTTP middleware in server.py, gateway.py, worker.py generates/forwards `X-Request-ID` header for cross-service log correlation (#105)
+- **WebSocket session IDs** — each WebSocket session gets a UUID for log correlation, forwarded via query parameter in gateway mode (#105)
+- **Startup env var validation** — `validate_env()` in new `src/config.py` validates MODEL_ID, REQUEST_TIMEOUT, IDLE_TIMEOUT, LOG_LEVEL, QUANTIZE, WORKER_PORT, WS_WINDOW_MAX_S at startup; exits with clear error on invalid config (#106)
+- **8 extracted config constants** — formerly hardcoded values now configurable via env vars with safe parsing: `TRANSLATE_TEMPERATURE`, `TRANSLATE_SRT_TEMPERATURE`, `SSE_CHUNK_SECONDS`, `SSE_OVERLAP_SECONDS`, `SUBTITLE_MAX_DURATION`, `SUBTITLE_PAUSE_THRESHOLD`, `SUBTITLE_MIN_DURATION`, `SUBTITLE_MIN_GAP` (#106)
+
+### Changed
+- **`.env.example`** — 3 new sections: Translation Tuning, SSE Streaming, Subtitle Timing (#106)
+- **Gateway error proxying** — parses structured error from worker and forwards it; falls back to `WORKER_ERROR` wrapper for unparseable responses (#107)
+
+### Fixed
+- **Missing `sf.read()` error handling** on 3 server.py endpoints (translations, subtitles, stream) — corrupt audio now returns `AUDIO_DECODE_FAILED` instead of unhandled 500 (#107)
+- **SSE stream error shape** — uses standard `{code, message, statusCode}` instead of ad-hoc `{"error": ...}` (#107)
+- **Log level aliases** — `WARN` and `FATAL` now accepted in `LOG_LEVEL` env var alongside canonical names (#106)
+
+### New Files
+- `src/errors.py` — error response helper
+- `src/config.py` — centralized config validation and extracted constants
+
 ## [v0.12.0] — 2026-02-25
 
 Sliding window WebSocket streaming: model sees up to 6 seconds of context instead of 450ms, bringing streaming accuracy close to batch quality.

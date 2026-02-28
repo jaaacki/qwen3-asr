@@ -4,6 +4,28 @@ Running narrative of decisions, patterns, and lessons.
 
 ---
 
+## 2026-03-01 — Why this design: Standards compliance as scaffold-time infrastructure (#105, #106, #107)
+
+**Type**: Why this design
+**Related**: Issues #105, #106, #107, v0.13.0
+
+### Pattern: Three pillars of production observability
+We audited against three production standards — structured logging, env config, and error handling — and found the logging was already strong (8/10) but env config (5/10) and error handling (2/10) were weak. Rather than fixing these ad-hoc, we implemented all three as a coordinated milestone to ensure consistency across the entire request chain (gateway → worker → server).
+
+### Design decisions
+
+**Error shape (`errors.py`)**: The `error_response()` helper auto-injects `requestId` from the `contextvars.ContextVar`, so endpoint code never manually passes it. This means error responses are always traceable without any discipline burden on the developer. We chose a flat `{code, message, statusCode, context}` shape over nested error objects because it's simpler to parse and aligns with the standard.
+
+**Request ID propagation**: Gateway generates the UUID (it's the entry point). For HTTP, it forwards via `X-Request-ID` header. For WebSocket, it uses a query parameter (`?request_id=...`) since WebSocket upgrade requests don't easily support custom headers in all client libraries. Server.py in standalone mode generates its own ID if no header is present.
+
+**Config validation (`config.py`)**: We validate all errors upfront and log them all before `sys.exit(1)`, rather than failing on the first. This lets operators fix all misconfigurations in one iteration. The `_safe_float()` / `_safe_int()` helpers for extracted constants log the error and fall back to defaults instead of crashing, because these values are tuning parameters, not critical config.
+
+### What could go wrong
+- The `contextvars.ContextVar` for requestId is task-scoped. If inference runs in a ThreadPoolExecutor (which it does), the executor thread won't inherit the contextvar. This is fine because GPU inference logs don't use the requestId — only the endpoint entry/exit logs do. If we ever add logging inside `_do_transcribe()`, we'd need to copy the context to the executor thread.
+- WebSocket middleware doesn't fire in FastAPI — we handle it manually in each WS handler. If a new WebSocket endpoint is added and forgets to set requestId, logs will be uncorrelated. The pattern is documented but not enforced.
+
+---
+
 ## 2026-02-24 — What just happened: Pinning all dependencies and fixing silent Dockerfile gaps (v0.10.1)
 
 **Type**: What just happened
