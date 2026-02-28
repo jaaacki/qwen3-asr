@@ -1,11 +1,12 @@
 from __future__ import annotations
-from logger import log
+from logger import log, set_request_id, reset_request_id
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 import sys
 import io
 import os
+import uuid as _uuid_module
 import gc
 import json
 import re
@@ -15,10 +16,17 @@ import time
 import heapq
 import dataclasses
 import numpy as np
+from scipy.signal import butter, sosfilt
 
 model = None
 _fast_model = None
 loaded_model_id = None
+
+
+def _telephony_bandpass(audio: np.ndarray, sr: int) -> np.ndarray:
+    """300-3400 Hz bandpass to remove DC and resampling aliasing."""
+    sos = butter(4, [300, 3400], btype="bandpass", fs=sr, output="sos")
+    return sosfilt(sos, audio).astype(np.float32)
 
 # Dedicated single-threaded executor for GPU inference
 _infer_executor = concurrent.futures.ThreadPoolExecutor(
@@ -361,28 +369,11 @@ def _load_model_sync():
 
     model = Qwen3ASRModel.from_pretrained(model_id, **load_kwargs)
 
-    # FP8 post-training quantization (opt-in via QUANTIZE=fp8, requires sm_89+)
-    quantize_mode = os.getenv("QUANTIZE", "").lower()
-    if quantize_mode == "fp8" and torch.cuda.is_available():
-        compute_capability = torch.cuda.get_device_capability()
-        if compute_capability >= (8, 9):  # sm_89+ (Ada/Hopper)
-            try:
-                from torchao.quantization import quantize_, Float8DynamicActivationFloat8WeightConfig
-                quantize_(model, Float8DynamicActivationFloat8WeightConfig())
-                log.info("FP8 quantization applied (torchao)")
-            except Exception as e:
-                log.error(f"FP8 quantization failed: {e}")
-        else:
-            cc = f"sm_{compute_capability[0]}{compute_capability[1]}"
-            log.info(f"FP8 requires sm_89+, current GPU is {cc} -- skipping")
-
-    # Compile for faster repeated inference (first call will be slower due to compilation)
-    if torch.cuda.is_available():
-        try:
-            model = torch.compile(model, mode="reduce-overhead")
-            log.info("torch.compile enabled (mode=reduce-overhead)")
-        except Exception as e:
-            log.info(f"torch.compile unavailable ({e}), using eager mode")
+    # torch.compile investigation: GPU utilization during inference is only ~25%.
+    # Bottleneck is Python overhead in HuggingFace generate() loop (~50ms/token × 70 tokens),
+    # not GPU compute. torch.compile speeds up GPU kernels but leaves Python overhead untouched
+    # → no measurable wall-clock improvement (4.2s compiled vs 3.4s eager).
+    # Real speedup requires vLLM backend (USE_VLLM=true) for C++-level decode loop.
 
     # Load fast (draft) model for speculative decoding
     if USE_SPECULATIVE:
@@ -413,6 +404,41 @@ def _load_model_sync():
         except Exception:
             pass
         release_gpu_memory()
+
+    # FP8 post-training quantization (opt-in via QUANTIZE=fp8, requires sm_89+)
+    # Done AFTER warmup so the from_pretrained() loading-peak (~1.7 GB transient) has
+    # fully subsided and release_gpu_memory() has freed reserved pages. This gives
+    # ~2.3 GB headroom vs the ~0.8 GB available immediately after loading.
+    quantize_mode = os.getenv("QUANTIZE", "").lower()
+    if quantize_mode == "fp8" and torch.cuda.is_available():
+        compute_capability = torch.cuda.get_device_capability()
+        if compute_capability >= (8, 9):  # sm_89+ (Ada/Hopper)
+            try:
+                from torchao.quantization import quantize_, Float8DynamicActivationFloat8WeightConfig
+                before_alloc = torch.cuda.memory_allocated() / 1024**2
+                before_res   = torch.cuda.memory_reserved()  / 1024**2
+                quantize_(model.model, Float8DynamicActivationFloat8WeightConfig())
+                after_alloc = torch.cuda.memory_allocated() / 1024**2
+                after_res   = torch.cuda.memory_reserved()  / 1024**2
+                log.info(f"FP8 quantization applied (torchao) — "
+                         f"BF16 allocated={before_alloc:.0f}MB → FP8 allocated={after_alloc:.0f}MB "
+                         f"(saved {before_alloc-after_alloc:.0f}MB)")
+                # Second warmup: exercise the now-quantized model
+                if torch.cuda.is_available():
+                    log.info("Warming up FP8 model...")
+                    rng2 = np.random.default_rng(seed=43)
+                    dummy2 = rng2.standard_normal(TARGET_SR).astype(np.float32) * 0.01
+                    try:
+                        model.transcribe((dummy2, TARGET_SR))
+                    except Exception:
+                        pass
+                    release_gpu_memory()
+            except Exception as e:
+                log.error(f"FP8 quantization failed: {e}")
+        else:
+            cc = f"sm_{compute_capability[0]}{compute_capability[1]}"
+            log.info(f"FP8 requires sm_89+, current GPU is {cc} -- skipping")
+
 
     global _PINNED_AUDIO_BUFFER
     if torch.cuda.is_available():
@@ -561,6 +587,18 @@ async def lifespan(the_app):
 
 
 app = FastAPI(title="Qwen3-ASR API", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):
+    req_id = request.headers.get("x-request-id") or str(_uuid_module.uuid4())
+    token = set_request_id(req_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = req_id
+        return response
+    finally:
+        reset_request_id(token)
 
 
 @app.get("/health")
@@ -797,7 +835,10 @@ def _do_transcribe_vllm(audio, sr, lang_code, return_timestamps):
     """Inference via vLLM engine (when USE_VLLM=true)."""
     from vllm import SamplingParams
     params = SamplingParams(temperature=0, max_tokens=448)
-    outputs = _vllm_engine.generate({"audio": (audio, sr)}, params)
+    audio_input = {"audio": (audio, sr)}
+    if lang_code:
+        audio_input["language"] = lang_code
+    outputs = _vllm_engine.generate(audio_input, params)
     class _Result:
         def __init__(self, text, language):
             self.text = text
@@ -1054,9 +1095,10 @@ async def websocket_transcribe(websocket: WebSocket):
     # Sliding window: all received audio up to WS_WINDOW_MAX_BYTES
     audio_window = bytearray()
     # Language: None = auto-detect, or a code like "en", "zh"
-    lang_code: str | None = None
+    lang_code: str | None = "English"   # default; overridden by {"action":"config"} message
     # Counter for transcribed windows
     chunk_count = 0
+    _ws_prev_had_speech: bool = False
 
     try:
         await _ensure_model_loaded()
@@ -1160,20 +1202,43 @@ async def websocket_transcribe(websocket: WebSocket):
                             trim = (trim // 2) * 2
                             audio_window = audio_window[trim:]
 
-                        # Transcribe the entire window
-                        text, _ = await _transcribe_with_context(
-                            bytes(audio_window), b"", pad_silence=False,
-                            lang_code=lang_code,
-                            encoder_cache=None,
-                        )
-                        chunk_count += 1
+                        # ── VAD auto-flush ──────────────────────────────────────────────
+                        # Check if the tail of the current window has speech
+                        _tail_bytes = bytes(audio_window[-WS_BUFFER_SIZE:]) if len(audio_window) >= WS_BUFFER_SIZE else bytes(audio_window)
+                        _tail_float = np.frombuffer(_tail_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                        _current_has_speech = is_speech(_tail_float)
 
-                        if text:
-                            await websocket.send_json({
-                                "text": text,
-                                "is_partial": True,
-                                "is_final": False,
-                            })
+                        if not _current_has_speech and _ws_prev_had_speech:
+                            # End-of-utterance: flush full window with silence padding
+                            _ws_prev_had_speech = False
+                            text, _ = await _transcribe_with_context(
+                                bytes(audio_window), b"", pad_silence=True,
+                                lang_code=lang_code,
+                                encoder_cache=None,
+                            )
+                            chunk_count += 1
+                            if text:
+                                await websocket.send_json({
+                                    "text": text,
+                                    "is_partial": False,
+                                    "is_final": True,
+                                })
+                            audio_window.clear()
+                        else:
+                            _ws_prev_had_speech = _current_has_speech
+                            # ── existing partial transcription ────
+                            text, _ = await _transcribe_with_context(
+                                bytes(audio_window), b"", pad_silence=False,
+                                lang_code=lang_code,
+                                encoder_cache=None,
+                            )
+                            chunk_count += 1
+                            if text:
+                                await websocket.send_json({
+                                    "text": text,
+                                    "is_partial": True,
+                                    "is_final": False,
+                                })
 
             except WebSocketDisconnect:
                 # Client disconnected — transcribe any remaining audio
@@ -1242,18 +1307,20 @@ async def _transcribe_with_context(
             full_audio.extend(bytes(silence_bytes))
 
         if len(full_audio) == 0:
-            return ""
+            return "", None
 
         # Convert to numpy float32
         audio = np.frombuffer(full_audio, dtype=np.int16)
         audio = audio.astype(np.float32) / 32768.0
+        # Telephony bandpass: remove DC offset and 4-8 kHz aliasing from 8->16 kHz resample
+        audio = _telephony_bandpass(audio, TARGET_SR)
 
         sr = TARGET_SR
 
         # VAD gate: skip inference if no speech detected
         if not is_speech(audio):
             log.info("_transcribe_with_context | VAD: silence, skipping inference")
-            return ""
+            return "", None
 
         # Run inference via priority queue (WS = priority 0)
         # Use fast model for partials, full model for flush
