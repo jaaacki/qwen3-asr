@@ -581,6 +581,8 @@ async def _idle_watchdog():
 @asynccontextmanager
 async def lifespan(the_app):
     """ASGI lifespan handler — compatible with both uvicorn and granian."""
+    from config import validate_env
+    validate_env()
     _infer_queue.start()
     asyncio.create_task(_idle_watchdog())
     yield
@@ -985,8 +987,9 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
                 pass
 
         # Chunked progressive transcription: yield results as each chunk is processed
-        CHUNK_SAMPLES = TARGET_SR * 5  # 5-second chunks
-        OVERLAP_SAMPLES = TARGET_SR    # 1-second overlap between chunks
+        from config import SSE_CHUNK_SECONDS, SSE_OVERLAP_SECONDS
+        CHUNK_SAMPLES = TARGET_SR * SSE_CHUNK_SECONDS
+        OVERLAP_SAMPLES = TARGET_SR * SSE_OVERLAP_SECONDS
 
         if len(audio) <= CHUNK_SAMPLES:
             # Short audio: single batch

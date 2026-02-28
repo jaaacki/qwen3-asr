@@ -104,6 +104,8 @@ async def _idle_watchdog():
 
 @asynccontextmanager
 async def lifespan(app):
+    from config import validate_env
+    validate_env()
     asyncio.create_task(_idle_watchdog())
     if IDLE_TIMEOUT == 0:
         log.info("Always-on mode: pre-spawning worker at startup")
