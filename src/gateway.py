@@ -6,6 +6,7 @@ Usage: GATEWAY_MODE=true in compose.yaml environment.
 The gateway starts on port 8000 (external) and spawns a worker on port 8001 (internal).
 """
 from logger import log
+from errors import error_response
 
 import asyncio
 import json
@@ -187,7 +188,13 @@ async def translate(
             if resp.status != 200:
                 body = await resp.text()
                 log.error("Gateway proxy error | url={} status={}", url, resp.status)
-                return JSONResponse(status_code=resp.status, content={"error": body})
+                try:
+                    worker_error = json.loads(body)
+                    if "code" in worker_error:
+                        return JSONResponse(status_code=resp.status, content=worker_error)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+                return error_response("WORKER_ERROR", body, resp.status)
 
             log.info("Gateway POST /v1/audio/translations | proxied in {:.2f}s", time.time() - t0)
             if response_format.lower() == "srt":
@@ -228,7 +235,13 @@ async def generate_subtitles(
             if resp.status != 200:
                 body = await resp.text()
                 log.error("Gateway proxy error | url={} status={}", url, resp.status)
-                return JSONResponse(status_code=resp.status, content={"error": body})
+                try:
+                    worker_error = json.loads(body)
+                    if "code" in worker_error:
+                        return JSONResponse(status_code=resp.status, content=worker_error)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+                return error_response("WORKER_ERROR", body, resp.status)
             srt_content = await resp.text()
             log.info("Gateway POST /v1/audio/subtitles | proxied in {:.2f}s", time.time() - t0)
             return Response(
@@ -287,7 +300,7 @@ async def websocket_proxy(websocket: WebSocket):
     try:
         await _ensure_worker()
     except Exception as e:
-        await websocket.send_json({"error": f"Worker startup failed: {e}"})
+        await websocket.send_json({"code": "WORKER_STARTUP_FAILED", "message": f"Worker startup failed: {e}", "statusCode": 503})
         await websocket.close()
         return
 
@@ -335,7 +348,7 @@ async def websocket_proxy(websocket: WebSocket):
 
     except Exception as e:
         try:
-            await websocket.send_json({"error": f"Worker connection failed: {e}"})
+            await websocket.send_json({"code": "WORKER_CONNECTION_FAILED", "message": f"Worker connection failed: {e}", "statusCode": 502})
         except Exception:
             pass
     finally:
