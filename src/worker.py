@@ -20,18 +20,31 @@ from server import (
     WS_OVERLAP_SIZE,
 )
 import server as _srv
-from logger import log
+from logger import log, set_request_id, reset_request_id
 from errors import error_response
 import time
+import uuid as _uuid_module
 
 import asyncio
 import io
 import json
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI(title="Qwen3-ASR Worker")
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Read requestId forwarded from gateway for log correlation."""
+    req_id = request.headers.get("x-request-id") or str(_uuid_module.uuid4())
+    token = set_request_id(req_id)
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        reset_request_id(token)
 
 
 @app.on_event("startup")
