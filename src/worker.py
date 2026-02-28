@@ -67,7 +67,11 @@ async def transcribe(
     log.info("POST /transcribe | size={} language={}", len(audio_bytes), language)
     t0 = time.time()
     import soundfile as sf
-    audio, sr = sf.read(io.BytesIO(audio_bytes))
+    try:
+        audio, sr = sf.read(io.BytesIO(audio_bytes))
+    except Exception as e:
+        log.error("POST /transcribe | audio decode failed: {}", e)
+        return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
     lang_code = None if language == "auto" else language
 
     try:

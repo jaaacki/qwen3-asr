@@ -151,6 +151,16 @@ async def _proxy_transcribe(audio_bytes: bytes, language: str, return_timestamps
     async with aiohttp.ClientSession() as session:
         async with session.post(url, data=form, headers=_trace_headers(), timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
             _last_used = time.time()
+            if resp.status != 200:
+                body = await resp.text()
+                log.error("Gateway proxy error | url={} status={}", url, resp.status)
+                try:
+                    worker_error = json.loads(body)
+                    if "code" in worker_error:
+                        return JSONResponse(status_code=resp.status, content=worker_error)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+                return error_response("WORKER_ERROR", body, resp.status)
             return await resp.json()
 
 
