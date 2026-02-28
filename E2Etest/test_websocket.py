@@ -180,8 +180,8 @@ class TestWebSocketCommands:
 
             try:
                 response = await asyncio.wait_for(client.receive(), timeout=5)
-                # Should get error response
-                assert "error" in response
+                # Should get structured error response
+                assert "code" in response or "error" in response
             except asyncio.TimeoutError:
                 # Timeout is also acceptable handling
                 pass

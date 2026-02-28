@@ -77,6 +77,14 @@ Issues ordered by dependency:
 - [x] #94 [Enhancement] Add test_realtime_accuracy.py — WebSocket latency + accuracy benchmark
 - [x] #95 [Enhancement] Extend MarkdownReportGenerator with Real-Time Benchmark section
 
+## Phase 8 — Standards Compliance → v0.13.0
+_The system meets production logging, env config, and error handling standards._
+
+Issues ordered by dependency:
+- [x] #107 [Enhancement] Standard error response shape across all endpoints
+- [x] #106 [Enhancement] Startup env var validation and extract hardcoded config values
+- [x] #105 [Enhancement] Wire up requestId middleware and cross-service traceId propagation
+
 ## Backlog
 _Unplaced items or future considerations._
 - Retire whisper-engine container (Qwen3-ASR-1.7B matches/beats Whisper large-v3)

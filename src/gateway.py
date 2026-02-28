@@ -5,7 +5,8 @@ Routes inference requests to the worker via HTTP on an internal port.
 Usage: GATEWAY_MODE=true in compose.yaml environment.
 The gateway starts on port 8000 (external) and spawns a worker on port 8001 (internal).
 """
-from logger import log
+from logger import log, set_request_id, reset_request_id, get_request_id
+from errors import error_response
 
 import asyncio
 import json
@@ -13,10 +14,11 @@ import os
 import subprocess
 import sys
 import time
+import uuid as _uuid_module
 from contextlib import asynccontextmanager
 
 import aiohttp
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 
 WORKER_HOST = os.getenv("WORKER_HOST", "127.0.0.1")
@@ -103,6 +105,8 @@ async def _idle_watchdog():
 
 @asynccontextmanager
 async def lifespan(app):
+    from config import validate_env
+    validate_env()
     asyncio.create_task(_idle_watchdog())
     if IDLE_TIMEOUT == 0:
         log.info("Always-on mode: pre-spawning worker at startup")
@@ -116,6 +120,25 @@ async def lifespan(app):
 app = FastAPI(title="Qwen3-ASR Gateway", lifespan=lifespan)
 
 
+def _trace_headers() -> dict:
+    """Build headers dict with current requestId for worker requests."""
+    req_id = get_request_id()
+    return {"X-Request-ID": req_id} if req_id else {}
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Generate requestId for every incoming request and set in log context."""
+    req_id = str(_uuid_module.uuid4())
+    token = set_request_id(req_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
+    finally:
+        reset_request_id(token)
+
+
 async def _proxy_transcribe(audio_bytes: bytes, language: str, return_timestamps: bool) -> dict:
     """Forward transcription request to worker via HTTP."""
     global _last_used
@@ -126,8 +149,18 @@ async def _proxy_transcribe(audio_bytes: bytes, language: str, return_timestamps
     form.add_field("language", language)
     form.add_field("return_timestamps", str(return_timestamps).lower())
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
+        async with session.post(url, data=form, headers=_trace_headers(), timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
             _last_used = time.time()
+            if resp.status != 200:
+                body = await resp.text()
+                log.error("Gateway proxy error | url={} status={}", url, resp.status)
+                try:
+                    worker_error = json.loads(body)
+                    if "code" in worker_error:
+                        return JSONResponse(status_code=resp.status, content=worker_error)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+                return error_response("WORKER_ERROR", body, resp.status)
             return await resp.json()
 
 
@@ -182,12 +215,18 @@ async def translate(
     form.add_field("response_format", response_format)
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
+        async with session.post(url, data=form, headers=_trace_headers(), timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
             _last_used = time.time()
             if resp.status != 200:
                 body = await resp.text()
                 log.error("Gateway proxy error | url={} status={}", url, resp.status)
-                return JSONResponse(status_code=resp.status, content={"error": body})
+                try:
+                    worker_error = json.loads(body)
+                    if "code" in worker_error:
+                        return JSONResponse(status_code=resp.status, content=worker_error)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+                return error_response("WORKER_ERROR", body, resp.status)
 
             log.info("Gateway POST /v1/audio/translations | proxied in {:.2f}s", time.time() - t0)
             if response_format.lower() == "srt":
@@ -223,12 +262,18 @@ async def generate_subtitles(
     form.add_field("mode", mode)
     form.add_field("max_line_chars", str(max_line_chars))
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
+        async with session.post(url, data=form, headers=_trace_headers(), timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
             _last_used = time.time()
             if resp.status != 200:
                 body = await resp.text()
                 log.error("Gateway proxy error | url={} status={}", url, resp.status)
-                return JSONResponse(status_code=resp.status, content={"error": body})
+                try:
+                    worker_error = json.loads(body)
+                    if "code" in worker_error:
+                        return JSONResponse(status_code=resp.status, content=worker_error)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+                return error_response("WORKER_ERROR", body, resp.status)
             srt_content = await resp.text()
             log.info("Gateway POST /v1/audio/subtitles | proxied in {:.2f}s", time.time() - t0)
             return Response(
@@ -257,11 +302,13 @@ async def transcribe_stream(
 
     t0 = time.time()
 
+    trace_hdrs = _trace_headers()
+
     async def stream_from_worker():
         chunk_count = 0
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
+                async with session.post(url, data=form, headers=trace_hdrs, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
                     async for line in resp.content:
                         _last_used = time.time()
                         chunk_count += 1
@@ -282,16 +329,20 @@ async def websocket_proxy(websocket: WebSocket):
     """Proxy WebSocket transcription to worker."""
     global _last_used
     await websocket.accept()
+
+    ws_req_id = str(_uuid_module.uuid4())
+    token = set_request_id(ws_req_id)
     log.info("[GW-WS] Client connected, proxying to worker")
 
     try:
         await _ensure_worker()
     except Exception as e:
-        await websocket.send_json({"error": f"Worker startup failed: {e}"})
+        await websocket.send_json({"code": "WORKER_STARTUP_FAILED", "message": f"Worker startup failed: {e}", "statusCode": 503})
         await websocket.close()
+        reset_request_id(token)
         return
 
-    ws_url = f"ws://{WORKER_HOST}:{WORKER_PORT}/ws/transcribe"
+    ws_url = f"ws://{WORKER_HOST}:{WORKER_PORT}/ws/transcribe?request_id={ws_req_id}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(ws_url) as worker_ws:
@@ -335,11 +386,12 @@ async def websocket_proxy(websocket: WebSocket):
 
     except Exception as e:
         try:
-            await websocket.send_json({"error": f"Worker connection failed: {e}"})
+            await websocket.send_json({"code": "WORKER_CONNECTION_FAILED", "message": f"Worker connection failed: {e}", "statusCode": 502})
         except Exception:
             pass
     finally:
         log.info("[GW-WS] Proxy session ended")
+        reset_request_id(token)
         try:
             await websocket.close()
         except Exception:
@@ -356,6 +408,7 @@ async def health():
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"http://{WORKER_HOST}:{WORKER_PORT}/health",
+                    headers=_trace_headers(),
                     timeout=aiohttp.ClientTimeout(total=3),
                 ) as resp:
                     if resp.status == 200:

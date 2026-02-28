@@ -49,6 +49,8 @@ RUN pip install --no-cache-dir flash-attn==2.8.3 --no-build-isolation
 # RUN pip install --no-cache-dir torch-tensorrt
 
 COPY src/logger.py /app/logger.py
+COPY src/config.py /app/config.py
+COPY src/errors.py /app/errors.py
 COPY src/schemas.py /app/schemas.py
 COPY src/translator.py /app/translator.py
 COPY src/server.py /app/server.py

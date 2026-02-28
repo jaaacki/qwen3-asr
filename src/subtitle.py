@@ -2,6 +2,12 @@
 from __future__ import annotations
 
 from logger import log
+from config import (
+    SUBTITLE_MAX_DURATION,
+    SUBTITLE_PAUSE_THRESHOLD,
+    SUBTITLE_MIN_DURATION,
+    SUBTITLE_MIN_GAP,
+)
 
 import dataclasses
 import os
@@ -126,8 +132,8 @@ _BREAK_BEFORE = frozenset({
 def segment_subtitles(
     words: list[WordTimestamp],
     max_line_chars: int = 42,
-    max_duration: float = 7.0,
-    pause_threshold: float = 0.5,
+    max_duration: float = SUBTITLE_MAX_DURATION,
+    pause_threshold: float = SUBTITLE_PAUSE_THRESHOLD,
 ) -> list[SubtitleEvent]:
     """Group word timestamps into subtitle events.
 
@@ -257,8 +263,8 @@ def _split_into_two_lines(text: str, max_line_chars: int) -> str:
 
 def enforce_timing(
     events: list[SubtitleEvent],
-    min_duration: float = 0.833,
-    min_gap: float = 0.083,
+    min_duration: float = SUBTITLE_MIN_DURATION,
+    min_gap: float = SUBTITLE_MIN_GAP,
 ) -> list[SubtitleEvent]:
     """Post-process subtitle timing to enforce duration and gap constraints.
 
