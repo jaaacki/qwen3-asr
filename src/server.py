@@ -1,5 +1,6 @@
 from __future__ import annotations
 from logger import log, set_request_id, reset_request_id
+from errors import error_response
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -580,6 +581,8 @@ async def _idle_watchdog():
 @asynccontextmanager
 async def lifespan(the_app):
     """ASGI lifespan handler — compatible with both uvicorn and granian."""
+    from config import validate_env
+    validate_env()
     _infer_queue.start()
     asyncio.create_task(_idle_watchdog())
     yield
@@ -639,7 +642,7 @@ async def transcribe(
         audio, sr = sf.read(io.BytesIO(audio_bytes))
     except Exception as e:
         log.error("POST /v1/audio/transcriptions | audio decode failed: {}", e)
-        return JSONResponse(status_code=422, content={"error": f"Could not decode audio: {e}"})
+        return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
 
     lang_code = None if language == "auto" else language
 
@@ -653,7 +656,7 @@ async def transcribe(
         )
     except asyncio.TimeoutError:
         log.warning("POST /v1/audio/transcriptions | timed out after {:.2f}s", time.time() - t0)
-        return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+        return error_response("TRANSCRIPTION_TIMEOUT", "Transcription timed out", 504, elapsed=round(time.time() - t0, 2))
 
     if results and len(results) > 0:
         text = detect_and_fix_repetitions(results[0].text)
@@ -697,7 +700,7 @@ async def translate_endpoint(
             )
         except asyncio.TimeoutError:
             log.warning("POST /v1/audio/translations | timed out after {:.2f}s", time.time() - t0)
-            return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+            return error_response("TRANSCRIPTION_TIMEOUT", "Transcription timed out", 504, elapsed=round(time.time() - t0, 2))
 
         if not results:
             return Response(content="", media_type="text/plain; charset=utf-8")
@@ -715,7 +718,7 @@ async def translate_endpoint(
             translated_srt = await translate_srt(original_srt, target_lang)
         except Exception as e:
             log.error("POST /v1/audio/translations | translation API failed in {:.2f}s error={}", time.time() - t0, e)
-            return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
+            return error_response("TRANSLATION_FAILED", f"Translation API failed: {e}", 502)
 
         log.info("POST /v1/audio/translations | completed in {:.2f}s format={}", time.time() - t0, response_format)
         return Response(
@@ -736,7 +739,7 @@ async def translate_endpoint(
             )
         except asyncio.TimeoutError:
             log.warning("POST /v1/audio/translations | timed out after {:.2f}s", time.time() - t0)
-            return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+            return error_response("TRANSCRIPTION_TIMEOUT", "Transcription timed out", 504, elapsed=round(time.time() - t0, 2))
 
         if results and len(results) > 0:
             text = detect_and_fix_repetitions(results[0].text)
@@ -748,7 +751,7 @@ async def translate_endpoint(
                 translated_text = await translate_text(text, target_lang)
             except Exception as e:
                 log.error("POST /v1/audio/translations | translation API failed in {:.2f}s error={}", time.time() - t0, e)
-                return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
+                return error_response("TRANSLATION_FAILED", f"Translation API failed: {e}", 502)
         else:
             translated_text = ""
 
@@ -797,7 +800,7 @@ async def generate_subtitles(
         )
     except asyncio.TimeoutError:
         log.warning("POST /v1/audio/subtitles | timed out after {:.2f}s", time.time() - t0)
-        return JSONResponse(status_code=504, content={"error": "Subtitle generation timed out"})
+        return error_response("SUBTITLE_TIMEOUT", "Subtitle generation timed out", 504, elapsed=round(time.time() - t0, 2))
 
     if not results or len(results) == 0:
         return Response(
@@ -984,8 +987,9 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
                 pass
 
         # Chunked progressive transcription: yield results as each chunk is processed
-        CHUNK_SAMPLES = TARGET_SR * 5  # 5-second chunks
-        OVERLAP_SAMPLES = TARGET_SR    # 1-second overlap between chunks
+        from config import SSE_CHUNK_SECONDS, SSE_OVERLAP_SECONDS
+        CHUNK_SAMPLES = TARGET_SR * SSE_CHUNK_SECONDS
+        OVERLAP_SAMPLES = TARGET_SR * SSE_OVERLAP_SECONDS
 
         if len(audio) <= CHUNK_SAMPLES:
             # Short audio: single batch

@@ -2,6 +2,7 @@ import os
 import time
 from typing import Optional
 from logger import log
+from config import TRANSLATE_TEMPERATURE, TRANSLATE_SRT_TEMPERATURE
 
 def _get_client():
     try:
@@ -51,7 +52,7 @@ async def translate_text(text: str, target_lang: str) -> str:
                 {"role": "system", "content": "You are a professional and highly accurate translator."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
+            temperature=TRANSLATE_TEMPERATURE,
         )
     except Exception as e:
         log.error("Translation API error | model={} target={} elapsed={:.2f}s error={}", model, lang_name, time.time() - t0, e)
@@ -97,7 +98,7 @@ async def translate_srt(srt_content: str, target_lang: str) -> str:
                 {"role": "system", "content": "You are a professional subtitle translator. You MUST output ONLY valid SRT format."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1,
+            temperature=TRANSLATE_SRT_TEMPERATURE,
         )
     except Exception as e:
         log.error("SRT translation API error | model={} target={} elapsed={:.2f}s error={}", model, lang_name, time.time() - t0, e)
