@@ -4,17 +4,36 @@ import sys
 from logger import log
 
 # --- Extracted config (formerly hardcoded) ---
-TRANSLATE_TEMPERATURE = float(os.getenv("TRANSLATE_TEMPERATURE", "0.3"))
-TRANSLATE_SRT_TEMPERATURE = float(os.getenv("TRANSLATE_SRT_TEMPERATURE", "0.1"))
-SSE_CHUNK_SECONDS = int(os.getenv("SSE_CHUNK_SECONDS", "5"))
-SSE_OVERLAP_SECONDS = int(os.getenv("SSE_OVERLAP_SECONDS", "1"))
-SUBTITLE_MAX_DURATION = float(os.getenv("SUBTITLE_MAX_DURATION", "7.0"))
-SUBTITLE_PAUSE_THRESHOLD = float(os.getenv("SUBTITLE_PAUSE_THRESHOLD", "0.5"))
-SUBTITLE_MIN_DURATION = float(os.getenv("SUBTITLE_MIN_DURATION", "0.833"))
-SUBTITLE_MIN_GAP = float(os.getenv("SUBTITLE_MIN_GAP", "0.083"))
+def _safe_float(name: str, default: str) -> float:
+    raw = os.getenv(name, default)
+    try:
+        return float(raw)
+    except ValueError:
+        log.error("Config error: {} must be a float, got '{}' — using default {}", name, raw, default)
+        return float(default)
 
-_VALID_LOG_LEVELS = {"TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL"}
+def _safe_int(name: str, default: str) -> int:
+    raw = os.getenv(name, default)
+    try:
+        return int(raw)
+    except ValueError:
+        log.error("Config error: {} must be an integer, got '{}' — using default {}", name, raw, default)
+        return int(default)
+
+TRANSLATE_TEMPERATURE = _safe_float("TRANSLATE_TEMPERATURE", "0.3")
+TRANSLATE_SRT_TEMPERATURE = _safe_float("TRANSLATE_SRT_TEMPERATURE", "0.1")
+SSE_CHUNK_SECONDS = _safe_int("SSE_CHUNK_SECONDS", "5")
+SSE_OVERLAP_SECONDS = _safe_int("SSE_OVERLAP_SECONDS", "1")
+SUBTITLE_MAX_DURATION = _safe_float("SUBTITLE_MAX_DURATION", "7.0")
+SUBTITLE_PAUSE_THRESHOLD = _safe_float("SUBTITLE_PAUSE_THRESHOLD", "0.5")
+SUBTITLE_MIN_DURATION = _safe_float("SUBTITLE_MIN_DURATION", "0.833")
+SUBTITLE_MIN_GAP = _safe_float("SUBTITLE_MIN_GAP", "0.083")
+
+# Loguru native levels + common aliases (normalized before use)
+_VALID_LOG_LEVELS = {"TRACE", "DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "FATAL"}
 _VALID_QUANTIZE = {"", "int8", "fp8"}
+# Aliases normalized to loguru-native names
+_LOG_LEVEL_ALIASES = {"WARN": "WARNING", "FATAL": "CRITICAL"}
 
 
 def validate_env() -> None:
@@ -42,8 +61,9 @@ def validate_env() -> None:
     except ValueError as e:
         errors.append(f"IDLE_TIMEOUT must be an integer: {e}")
 
-    # LOG_LEVEL
+    # LOG_LEVEL (accept aliases like WARN→WARNING, FATAL→CRITICAL)
     log_level = os.getenv("LOG_LEVEL", "info").upper()
+    log_level = _LOG_LEVEL_ALIASES.get(log_level, log_level)
     if log_level not in _VALID_LOG_LEVELS:
         errors.append(f"LOG_LEVEL must be one of {_VALID_LOG_LEVELS}, got '{log_level}'")
 

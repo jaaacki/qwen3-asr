@@ -598,7 +598,7 @@ async def _request_id_middleware(request: Request, call_next):
     token = set_request_id(req_id)
     try:
         response = await call_next(request)
-        response.headers["X-Request-Id"] = req_id
+        response.headers["X-Request-ID"] = req_id
         return response
     finally:
         reset_request_id(token)
@@ -684,7 +684,11 @@ async def translate_endpoint(
     log.info("POST /v1/audio/translations | file={} size={} target={} format={}", file.filename, len(audio_bytes), language, response_format)
     t0 = time.time()
     import soundfile as sf
-    audio, sr = sf.read(io.BytesIO(audio_bytes))
+    try:
+        audio, sr = sf.read(io.BytesIO(audio_bytes))
+    except Exception as e:
+        log.error("POST /v1/audio/translations | audio decode failed: {}", e)
+        return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
 
     target_lang = "en" if language.lower() not in ["en", "zh"] else language.lower()
 
@@ -780,7 +784,11 @@ async def generate_subtitles(
     log.info("POST /v1/audio/subtitles | file={} size={} language={} mode={}", file.filename, len(audio_bytes), language, mode)
     t0 = time.time()
     import soundfile as sf
-    audio, sr = sf.read(io.BytesIO(audio_bytes))
+    try:
+        audio, sr = sf.read(io.BytesIO(audio_bytes))
+    except Exception as e:
+        log.error("POST /v1/audio/subtitles | audio decode failed: {}", e)
+        return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
 
     lang_code = None if language == "auto" else language
 
@@ -1044,7 +1052,7 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
 
     except Exception as e:
         log.error("SSE stream | error after {:.2f}s: {}", time.time() - t0, e)
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield f"data: {json.dumps({'code': 'SSE_STREAM_ERROR', 'message': str(e), 'statusCode': 500})}\n\n"
 
 
 @app.post("/v1/audio/transcriptions/stream")
@@ -1059,7 +1067,11 @@ async def transcribe_stream(
     audio_bytes = await file.read()
     log.info("POST /v1/audio/transcriptions/stream | file={} size={} language={}", file.filename, len(audio_bytes), language)
     import soundfile as sf
-    audio, sr = sf.read(io.BytesIO(audio_bytes))
+    try:
+        audio, sr = sf.read(io.BytesIO(audio_bytes))
+    except Exception as e:
+        log.error("POST /v1/audio/transcriptions/stream | audio decode failed: {}", e)
+        return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
 
     lang_code = None if language == "auto" else language
 
