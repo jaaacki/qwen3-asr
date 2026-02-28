@@ -1092,6 +1092,10 @@ async def websocket_transcribe(websocket: WebSocket):
     # WS compression disabled via uvicorn --ws websockets (see Dockerfile CMD)
     # per-message-deflate would add ~1ms CPU overhead per frame
     await websocket.accept()
+
+    # Session-scoped requestId: use forwarded ID from gateway, or generate new
+    ws_req_id = websocket.query_params.get("request_id") or str(_uuid_module.uuid4())
+    token = set_request_id(ws_req_id)
     log.info("[WS] Client connected")
 
     # Incoming audio accumulator (triggers inference at WS_BUFFER_SIZE)
@@ -1274,6 +1278,7 @@ async def websocket_transcribe(websocket: WebSocket):
         except Exception:
             pass
     finally:
+        reset_request_id(token)
         try:
             await websocket.close()
         except Exception:
