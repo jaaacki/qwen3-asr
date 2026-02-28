@@ -21,6 +21,7 @@ from server import (
 )
 import server as _srv
 from logger import log
+from errors import error_response
 import time
 
 import asyncio
@@ -67,7 +68,7 @@ async def transcribe(
     except asyncio.TimeoutError:
         log.warning("POST /transcribe | timed out after {:.2f}s", time.time() - t0)
         release_gpu_memory()
-        return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+        return error_response("TRANSCRIPTION_TIMEOUT", "Transcription timed out", 504, elapsed=round(time.time() - t0, 2))
 
     if results and len(results) > 0:
         text = detect_and_fix_repetitions(results[0].text)
@@ -94,13 +95,13 @@ async def generate_subtitles(
     from fastapi.responses import Response
 
     if mode not in ("accurate", "fast"):
-        return JSONResponse(status_code=400, content={"error": f"Invalid mode: {mode!r}. Must be 'accurate' or 'fast'."})
+        return error_response("INVALID_MODE", f"Invalid mode: {mode!r}. Must be 'accurate' or 'fast'.", 400, mode=mode)
 
     await _ensure_model_loaded()
 
     audio_bytes = await file.read()
     if not audio_bytes:
-        return JSONResponse(status_code=400, content={"error": "Empty audio file"})
+        return error_response("EMPTY_AUDIO", "Empty audio file", 400)
 
     log.info("POST /subtitles | size={} language={} mode={}", len(audio_bytes), language, mode)
     t0 = time.time()
@@ -110,7 +111,7 @@ async def generate_subtitles(
         audio, sr = sf.read(io.BytesIO(audio_bytes))
     except Exception as e:
         log.error("POST /subtitles | audio decode failed: {}", e)
-        return JSONResponse(status_code=422, content={"error": f"Could not decode audio: {e}"})
+        return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
 
     lang_code = None if language == "auto" else language
 
@@ -129,7 +130,7 @@ async def generate_subtitles(
     except asyncio.TimeoutError:
         log.warning("POST /subtitles | timed out after {:.2f}s", time.time() - t0)
         release_gpu_memory()
-        return JSONResponse(status_code=504, content={"error": "Subtitle generation timed out"})
+        return error_response("SUBTITLE_TIMEOUT", "Subtitle generation timed out", 504, elapsed=round(time.time() - t0, 2))
 
     if not results or len(results) == 0:
         return Response(
@@ -171,7 +172,7 @@ async def translate(
 
     audio_bytes = await file.read()
     if not audio_bytes:
-        return JSONResponse(status_code=400, content={"error": "Empty audio file"})
+        return error_response("EMPTY_AUDIO", "Empty audio file", 400)
 
     log.info("POST /translate | size={} target={} format={}", len(audio_bytes), language, response_format)
     t0 = time.time()
@@ -181,7 +182,7 @@ async def translate(
         audio, sr = sf.read(io.BytesIO(audio_bytes))
     except Exception as e:
         log.error("POST /translate | audio decode failed: {}", e)
-        return JSONResponse(status_code=422, content={"error": f"Could not decode audio: {e}"})
+        return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
 
     target_lang = "en" if language.lower() not in ["en", "zh"] else language.lower()
 
@@ -201,7 +202,7 @@ async def translate(
         except asyncio.TimeoutError:
             log.warning("POST /translate | timed out after {:.2f}s", time.time() - t0)
             release_gpu_memory()
-            return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+            return error_response("TRANSCRIPTION_TIMEOUT", "Transcription timed out", 504, elapsed=round(time.time() - t0, 2))
 
         if not results:
             return Response(content="", media_type="text/plain; charset=utf-8")
@@ -219,7 +220,7 @@ async def translate(
             translated_srt = await translate_srt(original_srt, target_lang)
         except Exception as e:
             log.error("POST /translate | translation API failed: {}", e)
-            return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
+            return error_response("TRANSLATION_FAILED", f"Translation API failed: {e}", 502)
 
         log.info("POST /translate | completed in {:.2f}s format={}", time.time() - t0, response_format)
         return Response(content=translated_srt, media_type="text/plain; charset=utf-8")
@@ -236,7 +237,7 @@ async def translate(
         except asyncio.TimeoutError:
             log.warning("POST /translate | timed out after {:.2f}s", time.time() - t0)
             release_gpu_memory()
-            return JSONResponse(status_code=504, content={"error": "Transcription timed out"})
+            return error_response("TRANSCRIPTION_TIMEOUT", "Transcription timed out", 504, elapsed=round(time.time() - t0, 2))
 
         if results and len(results) > 0:
             text = detect_and_fix_repetitions(results[0].text)
@@ -248,7 +249,7 @@ async def translate(
                 translated_text = await translate_text(text, target_lang)
             except Exception as e:
                 log.error("POST /translate | translation API failed: {}", e)
-                return JSONResponse(status_code=502, content={"error": f"Translation API failed: {e}"})
+                return error_response("TRANSLATION_FAILED", f"Translation API failed: {e}", 502)
         else:
             translated_text = ""
 

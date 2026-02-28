@@ -1,6 +1,14 @@
 from pydantic import BaseModel, Field
 from typing import Optional
 
+
+class ErrorResponse(BaseModel):
+    code: str = Field(..., description="Machine-readable error identifier (e.g. AUDIO_DECODE_FAILED)")
+    message: str = Field(..., description="Human-readable error description")
+    context: Optional[dict] = Field(None, description="Debug data (requestId, input params)")
+    statusCode: int = Field(..., description="HTTP status code")
+
+
 class HealthResponse(BaseModel):
     status: str = Field(..., description="Status of the service")
     mode: Optional[str] = Field(None, description="Running mode (e.g., gateway, server)")
