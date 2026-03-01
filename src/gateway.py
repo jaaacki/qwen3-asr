@@ -126,6 +126,19 @@ def _trace_headers() -> dict:
     return {"X-Request-ID": req_id} if req_id else {}
 
 
+async def _proxy_error_or_raise(resp: aiohttp.ClientResponse, url: str):
+    """Handle non-200 response from worker. Returns an error JSONResponse."""
+    body = await resp.text()
+    log.error("Gateway proxy error | url={} status={}", url, resp.status)
+    try:
+        worker_error = json.loads(body)
+        if "code" in worker_error:
+            return JSONResponse(status_code=resp.status, content=worker_error)
+    except (json.JSONDecodeError, KeyError):
+        pass
+    return error_response("WORKER_ERROR", body, resp.status)
+
+
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     """Generate requestId for every incoming request and set in log context."""
@@ -152,15 +165,7 @@ async def _proxy_transcribe(audio_bytes: bytes, language: str, return_timestamps
         async with session.post(url, data=form, headers=_trace_headers(), timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
             _last_used = time.time()
             if resp.status != 200:
-                body = await resp.text()
-                log.error("Gateway proxy error | url={} status={}", url, resp.status)
-                try:
-                    worker_error = json.loads(body)
-                    if "code" in worker_error:
-                        return JSONResponse(status_code=resp.status, content=worker_error)
-                except (json.JSONDecodeError, KeyError):
-                    pass
-                return error_response("WORKER_ERROR", body, resp.status)
+                return await _proxy_error_or_raise(resp, url)
             return await resp.json()
 
 
@@ -218,15 +223,7 @@ async def translate(
         async with session.post(url, data=form, headers=_trace_headers(), timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
             _last_used = time.time()
             if resp.status != 200:
-                body = await resp.text()
-                log.error("Gateway proxy error | url={} status={}", url, resp.status)
-                try:
-                    worker_error = json.loads(body)
-                    if "code" in worker_error:
-                        return JSONResponse(status_code=resp.status, content=worker_error)
-                except (json.JSONDecodeError, KeyError):
-                    pass
-                return error_response("WORKER_ERROR", body, resp.status)
+                return await _proxy_error_or_raise(resp, url)
 
             log.info("Gateway POST /v1/audio/translations | proxied in {:.2f}s", time.time() - t0)
             if response_format.lower() == "srt":
@@ -265,15 +262,7 @@ async def generate_subtitles(
         async with session.post(url, data=form, headers=_trace_headers(), timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as resp:
             _last_used = time.time()
             if resp.status != 200:
-                body = await resp.text()
-                log.error("Gateway proxy error | url={} status={}", url, resp.status)
-                try:
-                    worker_error = json.loads(body)
-                    if "code" in worker_error:
-                        return JSONResponse(status_code=resp.status, content=worker_error)
-                except (json.JSONDecodeError, KeyError):
-                    pass
-                return error_response("WORKER_ERROR", body, resp.status)
+                return await _proxy_error_or_raise(resp, url)
             srt_content = await resp.text()
             log.info("Gateway POST /v1/audio/subtitles | proxied in {:.2f}s", time.time() - t0)
             return Response(
