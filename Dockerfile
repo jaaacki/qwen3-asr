@@ -36,7 +36,6 @@ RUN pip install --no-cache-dir \
     granian==2.7.2 \
     loguru==0.7.3 \
     openai==2.24.0 \
-    # vllm \  # Uncomment for USE_VLLM=true support (large dependency)
     "git+https://github.com/QwenLM/Qwen3-ASR.git"
 
 # torchao for FP8 quantization (opt-in via QUANTIZE=fp8)
