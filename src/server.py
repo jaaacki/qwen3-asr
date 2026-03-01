@@ -324,7 +324,7 @@ def _load_model_sync():
         else:
             log.info("Speculative decoding: main and fast model are the same, skipping dual load")
 
-    model.eval()
+    model.model.eval()
 
     # Warmup inference to trigger CUDA kernel caching
     if torch.cuda.is_available():
@@ -402,7 +402,7 @@ def _load_model_sync():
                 low_cpu_mem_usage=True,
                 attn_implementation="sdpa",
             )
-            _fast_model.eval()
+            _fast_model.model.eval()
             log.info("Dual-model strategy enabled")
         except Exception as e:
             log.error(f"Fast model load failed: {e}, using single model")
