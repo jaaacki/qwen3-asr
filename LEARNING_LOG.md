@@ -4,6 +4,25 @@ Running narrative of decisions, patterns, and lessons.
 
 ---
 
+## 2026-03-01 — What just happened: Conservative codebase audit and cleanup (v0.13.1)
+
+**Type**: What just happened
+**Related**: v0.13.1
+
+### Pattern: Audit-first cleanup
+Rather than refactoring incrementally during feature work, we ran a dedicated audit pass across all source files, docs, and infrastructure. The audit identified 30 findings across 5 categories: dead code (7 items), code duplication (4 patterns), stale artifacts (8 files/dirs), architecture complexity (5 hotspots), and infrastructure issues (6 items). We chose a conservative scope — dead code removal, small helper extraction, and stale file cleanup — over a full structural refactor.
+
+### What we removed
+The biggest wins were removing ~120 lines of vLLM code that could never execute (vllm not installed in the Docker image), the `_patch_encoder_causal()` experiment (gated behind an unset env var, degrades quality if enabled), and `_encoder_state_cache` (marked "EXPERIMENTAL", never populated despite being listed as "completed" in ROADMAP). The 8 completed plan documents in `docs/plans/` accounted for 3,866 lines of historical artifacts.
+
+### Aha moment
+`model.eval()` was missing on the main ASR model — a correctness regression. The `.eval()` call existed for `_fast_model` and `_vad_model` but not the primary model. This is easy to miss because ASR models typically don't use dropout in inference, but it's still incorrect to skip it since the model's `training` flag affects batchnorm behavior.
+
+### What could go wrong
+The Dockerfile `COPY src/*.py /app/` glob now copies test files (`*_test.py`) into the container. These are harmless dead files in the image but add ~2KB. The alternative — maintaining an explicit COPY list — has caused 3 runtime crashes when new files were forgotten, so the glob is the safer default.
+
+---
+
 ## 2026-03-01 — Why this design: Standards compliance as scaffold-time infrastructure (#105, #106, #107)
 
 **Type**: Why this design

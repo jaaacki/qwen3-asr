@@ -1,5 +1,31 @@
 # Changelog
 
+## [v0.13.1] — 2026-03-01
+
+Conservative codebase cleanup: dead code removal, helper extraction, stale artifact cleanup, and documentation fixes. No behavioral changes.
+
+### Removed
+- **vLLM dead code** — `_load_vllm_engine()`, `_do_transcribe_vllm()`, `USE_VLLM` flag, and `_vllm_engine` global (vllm was never installed in the Docker image)
+- **Causal encoder experiment** — `_patch_encoder_causal()` function and `_encoder_state_cache` dict (gated behind `USE_CAUSAL_ENCODER`, never used)
+- **`WS_OVERLAP_SIZE`** — dead since v0.12.0 sliding window rewrite; removed from server.py, worker.py, .env, .env.example
+- **Duplicate `_fast_model = None`** — module-level shadow removed (kept the one with descriptive comment)
+- **Stale files** — `build.log`, `test.txt`, `src/server_test.py` (trivial assert-import tests), `.agent-rules/` (agent orchestration rules)
+- **8 completed plan documents** from `docs/plans/` (3,866 lines of historical artifacts)
+- **Unused test fixtures** — `async_http_client`, `reset_model_state` from conftest.py
+
+### Changed
+- **`_decode_audio()` helper** — extracted in server.py, replaces 4 inline `sf.read()` blocks; worker.py imports and uses it (replaces 4 more)
+- **`_proxy_error_or_raise()` helper** — extracted in gateway.py, replaces 3 inline proxy error handling blocks
+- **Dockerfile** — replaced 10 individual `COPY src/xxx.py` lines with `COPY src/*.py /app/` (prevents runtime crashes when new files are added)
+- **`debug_audio.py`** — replaced removed `librosa` import with `torchaudio` for resampling
+
+### Fixed
+- **`model.eval()` not called** on main ASR model after creation (correctness regression — disables dropout)
+- **`/transcribe/stream` in worker.py** — missing try/except around audio decode (unhandled 500 on corrupt input)
+- **`accuracy` marker** not registered in conftest.py `pytest_configure`
+- **CLAUDE.md** — torch.compile claimed "always on" (was investigated and abandoned); server.py line count said ~1100 (actually ~1300); references to non-existent `improvements.md` and `RESEARCH_ANALYSIS.md` removed; vLLM row removed from optimization table
+- **`sample_audio_20s` fixture** — removed fragile fallback to root `test01_20s.wav`
+
 ## [v0.13.0] — 2026-03-01
 
 Production standards compliance: structured error responses, request tracing, startup validation, and externalized configuration. Every log entry now carries a requestId, every error response is machine-parseable, and every configurable value lives in an env var.

@@ -85,6 +85,15 @@ Issues ordered by dependency:
 - [x] #106 [Enhancement] Startup env var validation and extract hardcoded config values
 - [x] #105 [Enhancement] Wire up requestId middleware and cross-service traceId propagation
 
+## v0.13.1 — Conservative Cleanup
+_Dead code removed, helpers extracted, stale artifacts deleted, docs fixed._
+
+- [x] Remove vLLM dead code, duplicate `_fast_model`, causal encoder experiment, `_encoder_state_cache`
+- [x] Remove dead `WS_OVERLAP_SIZE`, add missing `model.eval()`
+- [x] Extract `_decode_audio()` helper (server.py + worker.py), `_proxy_error_or_raise()` (gateway.py)
+- [x] Remove stale files, completed plan docs, unused conftest fixtures
+- [x] Fix Dockerfile COPY glob, CLAUDE.md stale docs, register `accuracy` marker
+
 ## Backlog
 _Unplaced items or future considerations._
 - Retire whisper-engine container (Qwen3-ASR-1.7B matches/beats Whisper large-v3)
