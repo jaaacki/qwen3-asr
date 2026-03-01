@@ -28,6 +28,19 @@ def _telephony_bandpass(audio: np.ndarray, sr: int) -> np.ndarray:
     sos = butter(4, [300, 3400], btype="bandpass", fs=sr, output="sos")
     return sosfilt(sos, audio).astype(np.float32)
 
+
+def _resample_pcm_bytes(pcm_bytes: bytes, orig_sr: int) -> bytes:
+    """Resample raw PCM 16-bit LE bytes from orig_sr to TARGET_SR (16kHz).
+
+    Returns resampled PCM bytes.  If orig_sr == TARGET_SR, returns input unchanged.
+    """
+    if orig_sr == TARGET_SR:
+        return pcm_bytes
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    import librosa
+    resampled = librosa.resample(samples, orig_sr=orig_sr, target_sr=TARGET_SR)
+    return resampled.astype(np.int16).tobytes()
+
 # Dedicated single-threaded executor for GPU inference
 _infer_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
@@ -525,7 +538,22 @@ async def lifespan(the_app):
     _infer_executor.shutdown(wait=False)
 
 
-app = FastAPI(title="Qwen3-ASR API", lifespan=lifespan)
+from schemas import (
+    HealthResponse, TranscriptionResponse, TranslationResponse,
+    ErrorResponse, API_TAGS, API_DESCRIPTION,
+)
+
+app = FastAPI(
+    title="Qwen3-ASR",
+    version="0.14.0",
+    description=API_DESCRIPTION,
+    openapi_tags=API_TAGS,
+    lifespan=lifespan,
+    responses={
+        422: {"model": ErrorResponse, "description": "Audio decode or validation error"},
+        504: {"model": ErrorResponse, "description": "Inference timed out"},
+    },
+)
 
 
 @app.middleware("http")
@@ -540,7 +568,13 @@ async def _request_id_middleware(request: Request, call_next):
         reset_request_id(token)
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    tags=["System"],
+    summary="Health check",
+    description="Returns service status, model loading state, and GPU info.",
+)
 async def health():
     gpu_info = {}
     # Only query GPU if torch is already imported (model loaded) — avoids
@@ -562,11 +596,17 @@ async def health():
     }
 
 
-@app.post("/v1/audio/transcriptions")
+@app.post(
+    "/v1/audio/transcriptions",
+    response_model=TranscriptionResponse,
+    tags=["Transcription"],
+    summary="Transcribe audio file",
+    description="Upload an audio file and get the transcribed text back. Supports WAV, FLAC, MP3, OGG, and other formats. Language is auto-detected by default.",
+)
 async def transcribe(
-    file: UploadFile = File(...),
-    language: str = Form("auto"),
-    return_timestamps: bool = Form(False)
+    file: UploadFile = File(..., description="Audio file (WAV, FLAC, MP3, OGG, AIFF, etc.)"),
+    language: str = Form("auto", description="Language code (e.g. 'en', 'zh', 'ja'). Use 'auto' for detection."),
+    return_timestamps: bool = Form(False, description="Include word-level timestamps in the output text"),
 ):
     await _ensure_model_loaded()
 
@@ -604,11 +644,16 @@ async def transcribe(
     return {"text": text, "language": language_code}
 
 
-@app.post("/v1/audio/translations")
+@app.post(
+    "/v1/audio/translations",
+    tags=["Translation"],
+    summary="Translate audio file",
+    description="Transcribe audio and translate the text into English or Chinese using an external LLM. Returns JSON by default, or SRT subtitles with `response_format=srt`.",
+)
 async def translate_endpoint(
-    file: UploadFile = File(...),
-    language: str = Form("en"),
-    response_format: str = Form("json"), # 'json' or 'srt'
+    file: UploadFile = File(..., description="Audio file to transcribe and translate"),
+    language: str = Form("en", description="Target language: 'en' (English) or 'zh' (Chinese)"),
+    response_format: str = Form("json", description="Response format: 'json' (text) or 'srt' (subtitles)"),
 ):
     from fastapi.responses import Response
     from translator import translate_text, translate_srt
@@ -697,19 +742,19 @@ async def translate_endpoint(
         return {"text": translated_text, "language": target_lang}
 
 
-@app.post("/v1/audio/subtitles")
+@app.post(
+    "/v1/audio/subtitles",
+    tags=["Subtitles"],
+    summary="Generate SRT subtitles",
+    description="Generate SRT subtitle file from audio. **fast** mode uses heuristic timestamps (no extra model). **accurate** mode uses ForcedAligner for word-level timing (~33ms accuracy, requires ~6GB VRAM).",
+    responses={200: {"content": {"text/plain": {}}, "description": "SRT subtitle file"}},
+)
 async def generate_subtitles(
-    file: UploadFile = File(...),
-    language: str = Form("auto"),
-    mode: str = Form("accurate"),
-    max_line_chars: int = Form(42),
+    file: UploadFile = File(..., description="Audio file to generate subtitles from"),
+    language: str = Form("auto", description="Language code (e.g. 'en', 'zh'). Use 'auto' for detection."),
+    mode: str = Form("accurate", description="Subtitle mode: 'fast' (heuristic) or 'accurate' (ForcedAligner)"),
+    max_line_chars: int = Form(42, description="Maximum characters per subtitle line before wrapping"),
 ):
-    """Generate SRT subtitles from audio file.
-
-    Modes:
-    - accurate: Uses ForcedAligner for word-level timestamps (~33ms accuracy)
-    - fast: Heuristic estimation from segment boundaries (no aligner needed)
-    """
     from fastapi.responses import Response
 
     await _ensure_model_loaded()
@@ -970,13 +1015,18 @@ async def sse_transcribe_generator(audio, sr, lang_code, return_timestamps):
         yield f"data: {json.dumps({'code': 'SSE_STREAM_ERROR', 'message': str(e), 'statusCode': 500})}\n\n"
 
 
-@app.post("/v1/audio/transcriptions/stream")
+@app.post(
+    "/v1/audio/transcriptions/stream",
+    tags=["Streaming"],
+    summary="Stream transcription (SSE)",
+    description="Upload a long audio file and receive transcription results as Server-Sent Events. Audio is split at silence boundaries and each chunk is transcribed progressively.",
+    responses={200: {"content": {"text/event-stream": {}}, "description": "SSE stream of transcription chunks"}},
+)
 async def transcribe_stream(
-    file: UploadFile = File(...),
-    language: str = Form("auto"),
-    return_timestamps: bool = Form(False)
+    file: UploadFile = File(..., description="Audio file to transcribe in streaming mode"),
+    language: str = Form("auto", description="Language code (e.g. 'en', 'zh'). Use 'auto' for detection."),
+    return_timestamps: bool = Form(False, description="Include word-level timestamps in each chunk"),
 ):
-    """Streaming transcription endpoint using Server-Sent Events (SSE)."""
     await _ensure_model_loaded()
 
     audio_bytes = await file.read()
@@ -1035,6 +1085,16 @@ async def websocket_transcribe(websocket: WebSocket):
     vad_param = websocket.query_params.get("use_server_vad")
     if vad_param is not None:
         use_vad = vad_param.lower() in ("true", "1", "yes")
+    # Input sample rate: client can send 8kHz (telephony) or 16kHz (default)
+    client_sr = int(websocket.query_params.get("sample_rate", str(TARGET_SR)))
+    if client_sr not in (8000, 16000):
+        await websocket.send_json({
+            "code": "UNSUPPORTED_SAMPLE_RATE",
+            "message": f"sample_rate must be 8000 or 16000, got {client_sr}",
+            "statusCode": 400,
+        })
+        await websocket.close()
+        return
     # Counter for transcribed windows
     chunk_count = 0
     _ws_prev_had_speech: bool = False
@@ -1045,7 +1105,7 @@ async def websocket_transcribe(websocket: WebSocket):
         # Send connection confirmation with config
         await websocket.send_json({
             "status": "connected",
-            "sample_rate": TARGET_SR,
+            "sample_rate": client_sr,
             "format": "pcm_s16le",
             "buffer_size": WS_BUFFER_SIZE,
             "window_max_s": WS_WINDOW_MAX_S,
@@ -1135,7 +1195,10 @@ async def websocket_transcribe(websocket: WebSocket):
 
                 # ── Binary audio data ───────────────────────────────────
                 elif "bytes" in data:
-                    audio_buffer.extend(data["bytes"])
+                    incoming = data["bytes"]
+                    if client_sr != TARGET_SR:
+                        incoming = _resample_pcm_bytes(incoming, client_sr)
+                    audio_buffer.extend(incoming)
 
                     # Trigger when buffer accumulates WS_BUFFER_SIZE of new audio
                     if len(audio_buffer) >= WS_BUFFER_SIZE:

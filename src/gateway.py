@@ -117,7 +117,22 @@ async def lifespan(app):
     yield
     await _kill_worker()
 
-app = FastAPI(title="Qwen3-ASR Gateway", lifespan=lifespan)
+from schemas import (
+    HealthResponse, TranscriptionResponse, TranslationResponse,
+    ErrorResponse, API_TAGS, API_DESCRIPTION,
+)
+
+app = FastAPI(
+    title="Qwen3-ASR",
+    version="0.14.0",
+    description=API_DESCRIPTION,
+    openapi_tags=API_TAGS,
+    lifespan=lifespan,
+    responses={
+        422: {"model": ErrorResponse, "description": "Audio decode or validation error"},
+        504: {"model": ErrorResponse, "description": "Inference timed out"},
+    },
+)
 
 
 def _trace_headers() -> dict:
@@ -169,18 +184,17 @@ async def _proxy_transcribe(audio_bytes: bytes, language: str, return_timestamps
             return await resp.json()
 
 
-from schemas import HealthResponse, TranscriptionResponse, TranslationResponse
-
 @app.post(
     "/v1/audio/transcriptions",
     response_model=TranscriptionResponse,
-    summary="Transcribe Audio",
-    description="Upload an audio file to transcribe its speech into text."
+    tags=["Transcription"],
+    summary="Transcribe audio file",
+    description="Upload an audio file and get the transcribed text back. Supports WAV, FLAC, MP3, OGG, and other formats. Language is auto-detected by default.",
 )
 async def transcribe(
-    file: UploadFile = File(..., description="The audio file to transcribe"),
-    language: str = Form("auto", description="The language code (e.g. 'en', 'zh'). 'auto' detects automatically."),
-    return_timestamps: bool = Form(False, description="Whether to include word-level timestamps in the response text"),
+    file: UploadFile = File(..., description="Audio file (WAV, FLAC, MP3, OGG, AIFF, etc.)"),
+    language: str = Form("auto", description="Language code (e.g. 'en', 'zh', 'ja'). Use 'auto' for detection."),
+    return_timestamps: bool = Form(False, description="Include word-level timestamps in the output text"),
 ):
     audio_bytes = await file.read()
     log.info("Gateway POST /v1/audio/transcriptions | size={} language={}", len(audio_bytes), language)
@@ -192,14 +206,14 @@ async def transcribe(
 
 @app.post(
     "/v1/audio/translations",
-    # Cannot strictly bound response_model to TranslationResponse if it returns SRT plain text, so omitted for raw text
-    summary="Translate Audio",
-    description="Transcribe and translate an audio file into English ('en') or Chinese ('zh'). Supports returning 'json' or 'srt'."
+    tags=["Translation"],
+    summary="Translate audio file",
+    description="Transcribe audio and translate the text into English or Chinese using an external LLM. Returns JSON by default, or SRT subtitles with `response_format=srt`.",
 )
 async def translate(
-    file: UploadFile = File(..., description="The audio file to translate"),
-    language: str = Form("en", description="The target language code for translation ('en' or 'zh')."),
-    response_format: str = Form("json", description="The format of the response ('json' or 'srt').")
+    file: UploadFile = File(..., description="Audio file to transcribe and translate"),
+    language: str = Form("en", description="Target language: 'en' (English) or 'zh' (Chinese)"),
+    response_format: str = Form("json", description="Response format: 'json' (text) or 'srt' (subtitles)"),
 ):
     """Proxy translation request to worker."""
     from fastapi.responses import Response
@@ -237,14 +251,19 @@ async def translate(
                 return await resp.json()
 
 
-@app.post("/v1/audio/subtitles")
+@app.post(
+    "/v1/audio/subtitles",
+    tags=["Subtitles"],
+    summary="Generate SRT subtitles",
+    description="Generate SRT subtitle file from audio. **fast** mode uses heuristic timestamps (no extra model). **accurate** mode uses ForcedAligner for word-level timing (~33ms accuracy, requires ~6GB VRAM).",
+    responses={200: {"content": {"text/plain": {}}, "description": "SRT subtitle file"}},
+)
 async def generate_subtitles(
-    file: UploadFile = File(...),
-    language: str = Form("auto"),
-    mode: str = Form("accurate"),
-    max_line_chars: int = Form(42),
+    file: UploadFile = File(..., description="Audio file to generate subtitles from"),
+    language: str = Form("auto", description="Language code (e.g. 'en', 'zh'). Use 'auto' for detection."),
+    mode: str = Form("accurate", description="Subtitle mode: 'fast' (heuristic) or 'accurate' (ForcedAligner)"),
+    max_line_chars: int = Form(42, description="Maximum characters per subtitle line before wrapping"),
 ):
-    """Proxy subtitle generation to worker."""
     from fastapi.responses import Response
 
     global _last_used
@@ -272,13 +291,18 @@ async def generate_subtitles(
             )
 
 
-@app.post("/v1/audio/transcriptions/stream")
+@app.post(
+    "/v1/audio/transcriptions/stream",
+    tags=["Streaming"],
+    summary="Stream transcription (SSE)",
+    description="Upload a long audio file and receive transcription results as Server-Sent Events. Audio is split at silence boundaries and each chunk is transcribed progressively. Useful for real-time feedback on long files.",
+    responses={200: {"content": {"text/event-stream": {}}, "description": "SSE stream of transcription chunks"}},
+)
 async def transcribe_stream(
-    file: UploadFile = File(...),
-    language: str = Form("auto"),
-    return_timestamps: bool = Form(False),
+    file: UploadFile = File(..., description="Audio file to transcribe in streaming mode"),
+    language: str = Form("auto", description="Language code (e.g. 'en', 'zh'). Use 'auto' for detection."),
+    return_timestamps: bool = Form(False, description="Include word-level timestamps in each chunk"),
 ):
-    """Proxy SSE streaming transcription to worker."""
     global _last_used
     await _ensure_worker()
     audio_bytes = await file.read()
@@ -331,11 +355,14 @@ async def websocket_proxy(websocket: WebSocket):
         reset_request_id(token)
         return
 
-    # Forward query params to worker (e.g. use_server_vad)
+    # Forward query params to worker (e.g. use_server_vad, sample_rate)
     qs_parts = [f"request_id={ws_req_id}"]
     vad_param = websocket.query_params.get("use_server_vad")
     if vad_param is not None:
         qs_parts.append(f"use_server_vad={vad_param}")
+    sr_param = websocket.query_params.get("sample_rate")
+    if sr_param is not None:
+        qs_parts.append(f"sample_rate={sr_param}")
     ws_url = f"ws://{WORKER_HOST}:{WORKER_PORT}/ws/transcribe?{'&'.join(qs_parts)}"
     try:
         async with aiohttp.ClientSession() as session:
@@ -392,7 +419,13 @@ async def websocket_proxy(websocket: WebSocket):
             pass
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    tags=["System"],
+    summary="Health check",
+    description="Returns service status, model loading state, GPU info, and worker process status. Use this for load balancer health checks.",
+)
 async def health():
     worker_alive = _worker_proc is not None and _worker_proc.poll() is None
     log.debug("Gateway GET /health | worker_alive={}", worker_alive)
