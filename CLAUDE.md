@@ -70,7 +70,7 @@ Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accur
 
 ### File Organization
 
-- `src/server.py` — Core FastAPI server with inference logic, priority queue, WebSocket handling (~1100 lines)
+- `src/server.py` — Core FastAPI server with inference logic, priority queue, WebSocket handling (~1300 lines)
 - `src/gateway.py` — Gateway proxy mode (GATEWAY_MODE=true); routes to worker subprocess
 - `src/worker.py` — Inference worker for gateway mode; imports logic from server.py
 - `src/subtitle.py` — Subtitle generation module: ForcedAligner, segmentation, SRT formatting
@@ -136,7 +136,7 @@ All Phase 3 features are gated behind environment variables — safe to experime
 | Feature | Env Var | Description |
 |---------|---------|-------------|
 | Flash Attention 2 | auto-detected | Falls back to SDPA if unavailable |
-| torch.compile | always on | `mode="reduce-overhead"` for repeated inference |
+| torch.compile | investigated, not used | Python overhead in generate() loop dominates; no wall-clock improvement |
 | Pinned memory | auto | Pre-allocated 30s buffer for fast CPU→GPU transfer |
 | CUDA streams | auto | Async DMA pipeline for transfer/compute overlap |
 | INT8 quantization | `QUANTIZE=int8` | bitsandbytes W8A8 (~50% VRAM reduction) |
@@ -176,8 +176,6 @@ Base image: `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel`. The `devel` variant i
 
 - `docs/WEBSOCKET_USAGE.md` — WebSocket protocol, connection format, example Python client
 - `docs/GRANIAN_BENCHMARK.md` — Performance comparison of ASGI servers
-- `RESEARCH_ANALYSIS.md` — Architecture comparison with official Qwen3-ASR SDK and vLLM backend
-- `improvements.md` — Prioritized optimization recommendations (includes WebSocket critical path latency analysis)
 - `ROADMAP.md` — Milestone planning (7 phases completed, backlog)
 - `CHANGELOG.md` — Version history
 - `LEARNING_LOG.md` — Technical learnings and decisions
