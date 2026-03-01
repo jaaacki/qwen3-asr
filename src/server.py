@@ -128,10 +128,6 @@ _cuda_stream: torch.cuda.Stream | None = None
 # At 16kHz 16-bit mono: 450ms = 14400 bytes
 WS_BUFFER_SIZE = int(os.getenv("WS_BUFFER_SIZE", str(int(TARGET_SR * 2 * 0.45))))
 
-# Overlap: how much of the previous chunk to prepend to the next (~150ms default)
-# Prevents words from being split at chunk boundaries
-WS_OVERLAP_SIZE = int(os.getenv("WS_OVERLAP_SIZE", str(int(TARGET_SR * 2 * 0.15))))
-
 # Silence padding appended before final transcription on flush (~600ms)
 # Gives the model trailing context to commit the last word
 WS_FLUSH_SILENCE_MS = int(os.getenv("WS_FLUSH_SILENCE_MS", "600"))
@@ -310,7 +306,7 @@ def _load_model_sync():
     # Bottleneck is Python overhead in HuggingFace generate() loop (~50ms/token × 70 tokens),
     # not GPU compute. torch.compile speeds up GPU kernels but leaves Python overhead untouched
     # → no measurable wall-clock improvement (4.2s compiled vs 3.4s eager).
-    # Real speedup requires vLLM backend (USE_VLLM=true) for C++-level decode loop.
+    # Real speedup requires a C++-level decode loop (e.g. vLLM or TensorRT-LLM).
 
     # Load fast (draft) model for speculative decoding
     if USE_SPECULATIVE:

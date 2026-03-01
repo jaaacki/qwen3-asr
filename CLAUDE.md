@@ -144,7 +144,6 @@ All Phase 3 features are gated behind environment variables — safe to experime
 | Speculative decoding | `USE_SPECULATIVE=true` | 0.6B draft + 1.7B verifier (~2x speed) |
 | ONNX encoder | `ONNX_ENCODER_PATH` | ORT-accelerated encoder forward pass |
 | TensorRT encoder | `TRT_ENCODER_PATH` | Compiled TRT engine for encoder |
-| vLLM backend | `USE_VLLM=true` | PagedAttention serving engine |
 | CUDA Graphs warmup | `USE_CUDA_GRAPHS=true` | 3 extra warmup passes for kernel caching |
 | NUMA CPU pinning | `NUMA_NODE=0` | Pin to GPU-collocated NUMA node |
 | Granian ASGI | `USE_GRANIAN=true` | Rust-based ASGI server (alternative to uvicorn) |
