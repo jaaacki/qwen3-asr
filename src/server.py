@@ -184,6 +184,12 @@ def detect_and_fix_repetitions(text: str, max_repeats: int = 2) -> str:
     return ' '.join(words)
 
 
+def _decode_audio(audio_bytes: bytes) -> tuple:
+    """Decode audio bytes via soundfile. Returns (audio_ndarray, sample_rate)."""
+    import soundfile as sf
+    return sf.read(io.BytesIO(audio_bytes))
+
+
 # Silero VAD — loaded lazily at model startup
 _vad_model = None
 
@@ -567,9 +573,8 @@ async def transcribe(
     audio_bytes = await file.read()
     log.info("POST /v1/audio/transcriptions | file={} size={} language={}", file.filename, len(audio_bytes), language)
     t0 = time.time()
-    import soundfile as sf
     try:
-        audio, sr = sf.read(io.BytesIO(audio_bytes))
+        audio, sr = _decode_audio(audio_bytes)
     except Exception as e:
         log.error("POST /v1/audio/transcriptions | audio decode failed: {}", e)
         return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
@@ -613,9 +618,8 @@ async def translate_endpoint(
     audio_bytes = await file.read()
     log.info("POST /v1/audio/translations | file={} size={} target={} format={}", file.filename, len(audio_bytes), language, response_format)
     t0 = time.time()
-    import soundfile as sf
     try:
-        audio, sr = sf.read(io.BytesIO(audio_bytes))
+        audio, sr = _decode_audio(audio_bytes)
     except Exception as e:
         log.error("POST /v1/audio/translations | audio decode failed: {}", e)
         return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
@@ -713,9 +717,8 @@ async def generate_subtitles(
     audio_bytes = await file.read()
     log.info("POST /v1/audio/subtitles | file={} size={} language={} mode={}", file.filename, len(audio_bytes), language, mode)
     t0 = time.time()
-    import soundfile as sf
     try:
-        audio, sr = sf.read(io.BytesIO(audio_bytes))
+        audio, sr = _decode_audio(audio_bytes)
     except Exception as e:
         log.error("POST /v1/audio/subtitles | audio decode failed: {}", e)
         return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
@@ -978,9 +981,8 @@ async def transcribe_stream(
 
     audio_bytes = await file.read()
     log.info("POST /v1/audio/transcriptions/stream | file={} size={} language={}", file.filename, len(audio_bytes), language)
-    import soundfile as sf
     try:
-        audio, sr = sf.read(io.BytesIO(audio_bytes))
+        audio, sr = _decode_audio(audio_bytes)
     except Exception as e:
         log.error("POST /v1/audio/transcriptions/stream | audio decode failed: {}", e)
         return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
