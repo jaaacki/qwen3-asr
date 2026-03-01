@@ -712,18 +712,11 @@ def sample_audio_5s(audio_dir: Path) -> Path:
 
 @pytest.fixture(scope="session")
 def sample_audio_20s(audio_dir: Path) -> Path:
-    """Path to 20-second test audio file (test01_20s.wav)."""
-    # First try the existing file in root
-    root_path = Path(__file__).parent.parent / "test01_20s.wav"
-    if root_path.exists():
-        return root_path
-
-    # Then try E2Etest location
+    """Path to 20-second test audio file."""
     path = audio_dir / "medium_20s.wav"
-    if path.exists():
-        return path
-
-    pytest.skip(f"Test audio not found: tried {root_path} and {path}")
+    if not path.exists():
+        pytest.skip(f"Test audio not found: {path}")
+    return path
 
 
 @pytest.fixture(scope="session")
@@ -759,17 +752,6 @@ def http_client(base_url: str, api_key: str | None) -> Generator[httpx.Client, N
         yield client
 
 
-@pytest.fixture
-async def async_http_client(base_url: str, api_key: str | None):
-    """Asynchronous HTTP client for API calls."""
-    headers = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    async with httpx.AsyncClient(base_url=base_url, headers=headers, timeout=300) as client:
-        yield client
-
-
 # =============================================================================
 # Model management fixtures
 # =============================================================================
@@ -799,14 +781,6 @@ def ensure_model_loaded(http_client: httpx.Client, sample_audio_5s: Path):
     pytest.skip("Model failed to load within timeout")
 
 
-@pytest.fixture
-def reset_model_state():
-    """Reset any cached model state between tests if needed."""
-    # Placeholder for state reset logic
-    yield
-    # Cleanup after test
-
-
 # =============================================================================
 # Pytest configuration
 # =============================================================================
@@ -821,6 +795,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "requires_gpu: marks tests that require GPU")
     config.addinivalue_line("markers", "requires_aligner: marks tests that require Qwen3-ForcedAligner-0.6B")
     config.addinivalue_line("markers", "subtitle: marks tests as subtitle tests")
+    config.addinivalue_line("markers", "accuracy: marks tests as accuracy/WER/CER tests")
 
 
 def pytest_collection_modifyitems(config, items):
