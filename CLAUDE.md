@@ -89,6 +89,7 @@ Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accur
 | `/v1/audio/transcriptions` | POST | File upload transcription (OpenAI-compatible) |
 | `/v1/audio/transcriptions/stream` | POST | SSE streaming transcription (chunks long audio at silence boundaries) |
 | `/v1/audio/subtitles` | POST | SRT subtitle generation (accurate + fast modes) |
+| `/v1/audio/translations` | POST | Transcribe + translate via external LLM API |
 | `/ws/transcribe` | WebSocket | Real-time streaming with raw PCM input |
 
 ### Concurrency Model
@@ -118,9 +119,9 @@ Test markers: `smoke`, `slow`, `performance`, `websocket`, `integration`, `accur
 - Accumulates audio in a sliding window (up to `WS_WINDOW_MAX_S` seconds, default 6s)
 - **Sliding window**: Re-transcribes entire accumulated audio each trigger for full context; partials are cumulative (client replaces, never appends)
 - **Silence padding**: 600ms silence appended on `flush` command to commit trailing words (`WS_FLUSH_SILENCE_MS`)
-- **VAD gating**: Silero VAD skips inference for silent frames (no GPU usage for silence)
+- **VAD gating**: Silero VAD skips inference for silent frames; auto-flushes on speech→silence transitions (`ASR_USE_SERVER_VAD=true` default, overridable per-connection via query param or config action)
 - **Dual-model**: If `DUAL_MODEL=true`, uses 0.6B for partials, 1.7B for final transcription
-- Control messages: `flush`, `reset`, `config` (set language)
+- Control messages: `flush`, `reset`, `config` (set language, toggle `use_server_vad`)
 - Buffer transcribed on disconnect (no audio loss)
 
 ### Audio Preprocessing & Chunking
@@ -136,7 +137,6 @@ All Phase 3 features are gated behind environment variables — safe to experime
 | Feature | Env Var | Description |
 |---------|---------|-------------|
 | Flash Attention 2 | auto-detected | Falls back to SDPA if unavailable |
-| torch.compile | investigated, not used | Python overhead in generate() loop dominates; no wall-clock improvement |
 | Pinned memory | auto | Pre-allocated 30s buffer for fast CPU→GPU transfer |
 | CUDA streams | auto | Async DMA pipeline for transfer/compute overlap |
 | INT8 quantization | `QUANTIZE=int8` | bitsandbytes W8A8 (~50% VRAM reduction) |
@@ -160,6 +160,7 @@ All Phase 3 features are gated behind environment variables — safe to experime
 | `WS_BUFFER_SIZE` | `14400` | WebSocket audio buffer (~450ms at 16kHz) |
 | `WS_WINDOW_MAX_S` | `6.0` | Max seconds of audio in sliding window for WS streaming |
 | `WS_FLUSH_SILENCE_MS` | `600` | Silence padding on flush (ms) |
+| `ASR_USE_SERVER_VAD` | `true` | Server-side VAD: auto-flush + silence skip (overridable per-connection) |
 | `GATEWAY_MODE` | `false` | Run as gateway+worker split |
 | `DUAL_MODEL` | `false` | Load both 0.6B and 1.7B models |
 | `QUANTIZE` | `""` | `int8` or `fp8` |
@@ -175,6 +176,6 @@ Base image: `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel`. The `devel` variant i
 
 - `docs/WEBSOCKET_USAGE.md` — WebSocket protocol, connection format, example Python client
 - `docs/GRANIAN_BENCHMARK.md` — Performance comparison of ASGI servers
-- `ROADMAP.md` — Milestone planning (7 phases completed, backlog)
+- `ROADMAP.md` — Milestone planning (8 phases completed, backlog)
 - `CHANGELOG.md` — Version history
 - `LEARNING_LOG.md` — Technical learnings and decisions

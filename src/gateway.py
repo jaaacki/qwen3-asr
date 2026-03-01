@@ -331,7 +331,12 @@ async def websocket_proxy(websocket: WebSocket):
         reset_request_id(token)
         return
 
-    ws_url = f"ws://{WORKER_HOST}:{WORKER_PORT}/ws/transcribe?request_id={ws_req_id}"
+    # Forward query params to worker (e.g. use_server_vad)
+    qs_parts = [f"request_id={ws_req_id}"]
+    vad_param = websocket.query_params.get("use_server_vad")
+    if vad_param is not None:
+        qs_parts.append(f"use_server_vad={vad_param}")
+    ws_url = f"ws://{WORKER_HOST}:{WORKER_PORT}/ws/transcribe?{'&'.join(qs_parts)}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(ws_url) as worker_ws:

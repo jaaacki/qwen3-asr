@@ -137,6 +137,10 @@ WS_FLUSH_SILENCE_MS = int(os.getenv("WS_FLUSH_SILENCE_MS", "600"))
 WS_WINDOW_MAX_S = float(os.getenv("WS_WINDOW_MAX_S", "6.0"))
 WS_WINDOW_MAX_BYTES = int(WS_WINDOW_MAX_S * TARGET_SR * 2)  # 16-bit PCM
 
+# Server-side VAD: auto-flush on speech→silence, skip inference for silence
+# Default true; clients can override per-connection via query param or config action
+ASR_USE_SERVER_VAD = os.getenv("ASR_USE_SERVER_VAD", "true").lower() == "true"
+
 # Speculative decoding: use 0.6B as draft, 1.7B as verifier
 USE_SPECULATIVE = os.getenv("USE_SPECULATIVE", "").lower() == "true"
 
@@ -1026,6 +1030,11 @@ async def websocket_transcribe(websocket: WebSocket):
     audio_window = bytearray()
     # Language: None = auto-detect, or a code like "en", "zh"
     lang_code: str | None = "English"   # default; overridden by {"action":"config"} message
+    # Per-connection VAD toggle (inherits server default; client can override)
+    use_vad: bool = ASR_USE_SERVER_VAD
+    vad_param = websocket.query_params.get("use_server_vad")
+    if vad_param is not None:
+        use_vad = vad_param.lower() in ("true", "1", "yes")
     # Counter for transcribed windows
     chunk_count = 0
     _ws_prev_had_speech: bool = False
@@ -1040,6 +1049,7 @@ async def websocket_transcribe(websocket: WebSocket):
             "format": "pcm_s16le",
             "buffer_size": WS_BUFFER_SIZE,
             "window_max_s": WS_WINDOW_MAX_S,
+            "use_server_vad": use_vad,
         })
 
         while True:
@@ -1068,6 +1078,7 @@ async def websocket_transcribe(websocket: WebSocket):
                                     bytes(audio_window), b"", pad_silence=True,
                                     lang_code=lang_code,
                                     encoder_cache=None,
+                                    use_vad=use_vad,
                                 )
                                 chunk_count += 1
                                 await websocket.send_json({
@@ -1097,10 +1108,13 @@ async def websocket_transcribe(websocket: WebSocket):
                                 lang_code = None
                             elif new_lang:
                                 lang_code = new_lang
-                            log.debug("[WS] config | language={}", lang_code or "auto")
+                            if "use_server_vad" in msg:
+                                use_vad = bool(msg["use_server_vad"])
+                            log.debug("[WS] config | language={} use_vad={}", lang_code or "auto", use_vad)
                             await websocket.send_json({
                                 "status": "configured",
                                 "language": lang_code or "auto",
+                                "use_server_vad": use_vad,
                             })
 
                         else:
@@ -1137,34 +1151,41 @@ async def websocket_transcribe(websocket: WebSocket):
                             audio_window = audio_window[trim:]
 
                         # ── VAD auto-flush ──────────────────────────────────────────────
-                        # Check if the tail of the current window has speech
-                        _tail_bytes = bytes(audio_window[-WS_BUFFER_SIZE:]) if len(audio_window) >= WS_BUFFER_SIZE else bytes(audio_window)
-                        _tail_float = np.frombuffer(_tail_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-                        _current_has_speech = is_speech(_tail_float)
+                        _vad_flushed = False
+                        if use_vad:
+                            # Check if the tail of the current window has speech
+                            _tail_bytes = bytes(audio_window[-WS_BUFFER_SIZE:]) if len(audio_window) >= WS_BUFFER_SIZE else bytes(audio_window)
+                            _tail_float = np.frombuffer(_tail_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                            _current_has_speech = is_speech(_tail_float)
 
-                        if not _current_has_speech and _ws_prev_had_speech:
-                            # End-of-utterance: flush full window with silence padding
-                            _ws_prev_had_speech = False
-                            text, _ = await _transcribe_with_context(
-                                bytes(audio_window), b"", pad_silence=True,
-                                lang_code=lang_code,
-                                encoder_cache=None,
-                            )
-                            chunk_count += 1
-                            if text:
-                                await websocket.send_json({
-                                    "text": text,
-                                    "is_partial": False,
-                                    "is_final": True,
-                                })
-                            audio_window.clear()
-                        else:
-                            _ws_prev_had_speech = _current_has_speech
-                            # ── existing partial transcription ────
+                            if not _current_has_speech and _ws_prev_had_speech:
+                                # End-of-utterance: flush full window with silence padding
+                                _ws_prev_had_speech = False
+                                _vad_flushed = True
+                                text, _ = await _transcribe_with_context(
+                                    bytes(audio_window), b"", pad_silence=True,
+                                    lang_code=lang_code,
+                                    encoder_cache=None,
+                                    use_vad=use_vad,
+                                )
+                                chunk_count += 1
+                                if text:
+                                    await websocket.send_json({
+                                        "text": text,
+                                        "is_partial": False,
+                                        "is_final": True,
+                                    })
+                                audio_window.clear()
+                            else:
+                                _ws_prev_had_speech = _current_has_speech
+
+                        if not _vad_flushed:
+                            # ── partial transcription (no VAD flush occurred) ────
                             text, _ = await _transcribe_with_context(
                                 bytes(audio_window), b"", pad_silence=False,
                                 lang_code=lang_code,
                                 encoder_cache=None,
+                                use_vad=use_vad,
                             )
                             chunk_count += 1
                             if text:
@@ -1184,6 +1205,7 @@ async def websocket_transcribe(websocket: WebSocket):
                             bytes(audio_window), b"", pad_silence=True,
                             lang_code=lang_code,
                             encoder_cache=None,
+                            use_vad=use_vad,
                         )
                         chunk_count += 1
                         if text:
@@ -1213,6 +1235,7 @@ async def _transcribe_with_context(
     pad_silence: bool = False,
     lang_code: str | None = None,
     encoder_cache=None,
+    use_vad: bool = True,
 ) -> tuple[str, object]:
     """
     Transcribe audio with optional overlap prefix and silence padding.
@@ -1223,6 +1246,7 @@ async def _transcribe_with_context(
         pad_silence: If True, append silence to help the model commit trailing words
         lang_code: Language code (e.g. "en", "zh") or None for auto-detect
         encoder_cache: Previous encoder output for KV-cache reuse (or None)
+        use_vad: If True, skip inference when no speech detected
 
     Returns:
         Tuple of (transcribed text, new encoder cache for next chunk)
@@ -1253,7 +1277,7 @@ async def _transcribe_with_context(
         sr = TARGET_SR
 
         # VAD gate: skip inference if no speech detected
-        if not is_speech(audio):
+        if use_vad and not is_speech(audio):
             log.info("_transcribe_with_context | VAD: silence, skipping inference")
             return "", None
 
