@@ -12,12 +12,11 @@ from server import (
     _idle_watchdog,
     _ensure_model_loaded,
     _infer_queue,
-    _transcribe_with_context,
+    _decode_audio,
     detect_and_fix_repetitions,
     TARGET_SR,
     REQUEST_TIMEOUT,
     WS_BUFFER_SIZE,
-    WS_OVERLAP_SIZE,
 )
 import server as _srv
 from logger import log, set_request_id, reset_request_id
@@ -66,9 +65,8 @@ async def transcribe(
     audio_bytes = await file.read()
     log.info("POST /transcribe | size={} language={}", len(audio_bytes), language)
     t0 = time.time()
-    import soundfile as sf
     try:
-        audio, sr = sf.read(io.BytesIO(audio_bytes))
+        audio, sr = _decode_audio(audio_bytes)
     except Exception as e:
         log.error("POST /transcribe | audio decode failed: {}", e)
         return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
@@ -123,9 +121,8 @@ async def generate_subtitles(
     log.info("POST /subtitles | size={} language={} mode={}", len(audio_bytes), language, mode)
     t0 = time.time()
 
-    import soundfile as sf
     try:
-        audio, sr = sf.read(io.BytesIO(audio_bytes))
+        audio, sr = _decode_audio(audio_bytes)
     except Exception as e:
         log.error("POST /subtitles | audio decode failed: {}", e)
         return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
@@ -194,9 +191,8 @@ async def translate(
     log.info("POST /translate | size={} target={} format={}", len(audio_bytes), language, response_format)
     t0 = time.time()
 
-    import soundfile as sf
     try:
-        audio, sr = sf.read(io.BytesIO(audio_bytes))
+        audio, sr = _decode_audio(audio_bytes)
     except Exception as e:
         log.error("POST /translate | audio decode failed: {}", e)
         return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
@@ -284,8 +280,11 @@ async def transcribe_stream(
     await _ensure_model_loaded()
     audio_bytes = await file.read()
     log.info("POST /transcribe/stream | size={} language={}", len(audio_bytes), language)
-    import soundfile as sf
-    audio, sr = sf.read(io.BytesIO(audio_bytes))
+    try:
+        audio, sr = _decode_audio(audio_bytes)
+    except Exception as e:
+        log.error("POST /transcribe/stream | audio decode failed: {}", e)
+        return error_response("AUDIO_DECODE_FAILED", f"Could not decode audio: {e}", 422, fileSize=len(audio_bytes))
     lang_code = None if language == "auto" else language
 
     from server import sse_transcribe_generator
