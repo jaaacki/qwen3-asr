@@ -4,6 +4,50 @@ Running narrative of decisions, patterns, and lessons.
 
 ---
 
+## 2026-03-01 — Why this design: Per-connection VAD toggle (v0.14.0)
+
+**Type**: Why this design
+**Related**: v0.14.0
+
+### Context
+The server had Silero VAD hardwired — always on, no way to disable. Some downstream clients (e.g. FreePBX integrations) implement their own VAD or need raw transcription of all audio regardless of speech content. A server-wide toggle wasn't enough because different WebSocket clients on the same server may have different needs.
+
+### Decision: Three-layer override
+1. **Env var** (`ASR_USE_SERVER_VAD=true`) — server-wide default
+2. **Query param** (`?use_server_vad=false`) — per-connection at connect time
+3. **Config action** (`{"action":"config","use_server_vad":false}`) — mid-session toggle
+
+Each layer overrides the one above. The connection confirmation and config response both echo back the effective `use_server_vad` value so the client knows what's active.
+
+### Implementation: VAD gates two behaviors
+When `use_vad=false`:
+- **Auto-flush disabled** — the speech→silence transition detection is skipped entirely; no automatic `is_final` emissions
+- **Silence skip disabled** — `_transcribe_with_context()` runs inference even when `is_speech()` returns False
+
+The `use_vad` flag is threaded through all 4 call sites of `_transcribe_with_context()` in the WebSocket handler, plus the gateway forwards the query param to the worker.
+
+### What could go wrong
+- With VAD off, the server will run GPU inference on pure silence, wasting compute. This is intentional — the client is opting in to handle VAD themselves.
+- Without auto-flush, the sliding window fills to `WS_WINDOW_MAX_S` and old audio gets trimmed. The client must send `flush` commands to get `is_final` results.
+
+---
+
+## 2026-03-01 — What just happened: Documentation catch-up (v0.14.0)
+
+**Type**: What just happened
+**Related**: v0.14.0
+
+### Pattern: Docs drift after feature velocity
+After 8 phases of rapid feature development, the README still referenced removed features (vLLM backend, causal encoder, `WS_OVERLAP_SIZE`) and was missing entire capabilities (translation endpoint, sliding window, config actions). The `.env` files contained dead env vars. The WebSocket docs didn't mention VAD or the config action.
+
+### Action
+Full rewrite of README with feature-first organization (what can you *do* with this, not how was it *built*). Every env var documented with default and description, grouped by function. Every endpoint has curl examples and response format. The `.env` and `.env.example` were cleaned of dead vars and aligned with actual code.
+
+### Lesson
+Feature velocity without doc maintenance creates a trust gap — users can't tell what's real and what's aspirational. Periodic doc audits (like code audits) should happen after every major feature batch.
+
+---
+
 ## 2026-03-01 — What just happened: Conservative codebase audit and cleanup (v0.13.1)
 
 **Type**: What just happened

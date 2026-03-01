@@ -94,6 +94,15 @@ _Dead code removed, helpers extracted, stale artifacts deleted, docs fixed._
 - [x] Remove stale files, completed plan docs, unused conftest fixtures
 - [x] Fix Dockerfile COPY glob, CLAUDE.md stale docs, register `accuracy` marker
 
+## v0.14.0 — Server VAD Toggle & Documentation
+_Per-connection VAD control and comprehensive documentation rewrite._
+
+- [x] Add `ASR_USE_SERVER_VAD` env var (default true) with per-connection override via query param and config action
+- [x] Gateway forwards `use_server_vad` query param to worker
+- [x] Full README rewrite — features, endpoints, env vars, examples
+- [x] Clean stale refs from `.env`, `.env.example`, CLAUDE.md, WebSocket docs (vLLM, causal encoder, WS_OVERLAP_SIZE)
+- [x] Update CHANGELOG, LEARNING_LOG, ROADMAP
+
 ## Backlog
 _Unplaced items or future considerations._
 - Retire whisper-engine container (Qwen3-ASR-1.7B matches/beats Whisper large-v3)

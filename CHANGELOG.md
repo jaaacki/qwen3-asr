@@ -1,5 +1,27 @@
 # Changelog
 
+## [v0.14.0] — 2026-03-01
+
+Server-side VAD toggle and comprehensive documentation rewrite. VAD is now configurable per-connection and stale references cleaned across all docs.
+
+### Added
+- **`ASR_USE_SERVER_VAD` env var** — server-wide default for VAD (default `true`); controls auto-flush on speech→silence transitions and inference skipping for silent frames
+- **Per-connection VAD override** — WebSocket clients can disable/enable VAD via query param (`?use_server_vad=false`) or mid-session config action (`{"action":"config","use_server_vad":false}`)
+- **VAD state in handshake** — WebSocket connection confirmation now includes `use_server_vad` field
+- **VAD state in config response** — config action response now includes `use_server_vad` field
+- **Gateway VAD forwarding** — gateway proxies `use_server_vad` query param to worker
+
+### Changed
+- **README.md** — full rewrite: organized features into sections (Speech-to-Text, Subtitles, Translation, WebSocket, Performance, Quantization, Observability); complete env var reference by category; added endpoint examples with response formats; added supported audio formats section; removed stale vLLM/causal encoder references
+- **`.env`** — removed stale `USE_VLLM`, `USE_CAUSAL_ENCODER`, `WS_OVERLAP_SIZE`; added `ASR_USE_SERVER_VAD=true`; renamed sections for clarity
+- **`.env.example`** — same stale removals; added `ASR_USE_SERVER_VAD` with inline docs explaining per-connection override
+- **`docs/WEBSOCKET_USAGE.md`** — added query parameters table, Server-Side VAD section, config action with `use_server_vad` toggle, updated Python example with VAD awareness
+- **`CLAUDE.md`** — added `/v1/audio/translations` to endpoints table; updated VAD description; added `ASR_USE_SERVER_VAD` to env vars table; removed torch.compile from optimizations
+
+### Removed
+- **Stale env vars from docs** — `USE_VLLM`, `USE_CAUSAL_ENCODER`, `WS_OVERLAP_SIZE` removed from `.env`, `.env.example`, README configuration tables
+- **torch.compile from CLAUDE.md** optimizations table (was investigated and abandoned)
+
 ## [v0.13.1] — 2026-03-01
 
 Conservative codebase cleanup: dead code removal, helper extraction, stale artifact cleanup, and documentation fixes. No behavioral changes.
