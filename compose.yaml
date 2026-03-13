@@ -13,6 +13,7 @@ services:
       - .env
     networks:
       - qwen3-asr-net
+      - freepbx-net
     logging:
       driver: json-file
       options:
@@ -36,3 +37,6 @@ networks:
   qwen3-asr-net:
     driver: bridge
     name: qwen3-asr-net
+  freepbx-net:
+    external: true
+    name: freepbx-net

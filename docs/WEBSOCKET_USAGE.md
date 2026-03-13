@@ -8,8 +8,10 @@
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `use_server_vad` | `true` | Enable server-side VAD (auto-flush on speech→silence, skip inference for silence) |
+| `sample_rate` | `16000` | Input PCM sample rate: `8000` (telephony) or `16000` (default). 8kHz audio is resampled to 16kHz server-side. |
 
 Example: `ws://localhost:8100/ws/transcribe?use_server_vad=false`
+Example (8kHz telephony): `ws://localhost:8100/ws/transcribe?sample_rate=8000`
 
 ## Protocol
 
@@ -27,7 +29,7 @@ Client connects and receives confirmation:
 ```
 
 ### Audio Streaming
-Send binary audio frames (PCM 16-bit little-endian, 16kHz mono):
+Send binary audio frames (PCM 16-bit little-endian, 16kHz or 8kHz mono):
 - Server accumulates audio in a sliding window (up to `WS_WINDOW_MAX_S` seconds, default 6s)
 - Every ~450ms (configurable via `WS_BUFFER_SIZE`), the server re-transcribes the entire accumulated window
 - **Cumulative partials**: Each partial result contains the full running transcript — client should replace its display text on each message, never append
